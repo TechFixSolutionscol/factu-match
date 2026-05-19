@@ -1,7 +1,7 @@
 /**
  * ID de la hoja de cálculo y configuración
  */
-const SPREADSHEET_ID = "1lyykmDHqr35nQ_1ZGVKqX60jdQukUNScsDMwzmWx_jM";
+const SPREADSHEET_ID = "14mZS0MiIQuq7MIQS0JL_IqWGqYeBBwAkfSiJ92jFbLk";
 
 /**
  * Función principal para recibir peticiones POST
@@ -25,6 +25,8 @@ function doPost(e) {
       case 'changePassword': response = changePassword(params.data); break;
       case 'forgotPassword': response = forgotPassword(params.data.email); break;
       case 'resetPassword': response = resetPassword(params.data.token, params.data.pass); break;
+      case 'saveOdooConfig': response = saveOdooConfig(params.data); break;
+      case 'getOdooConfig': response = getOdooConfig(); break;
       default: throw new Error('Acción no reconocida');
     }
 
@@ -83,6 +85,12 @@ function initDB() {
     const sheetH = ss.insertSheet("Historial");
     sheetH.appendRow(["Fecha", "Mes", "Año", "Total_DIAN", "Total_Siesa", "Total_Faltantes", "Accuracy_Pct"]);
     sheetH.getRange(1, 1, 1, 7).setBackground("#1a1f2e").setFontColor("#00e5ff").setFontWeight("bold");
+  }
+
+  if (!ss.getSheetByName("OdooConfig")) {
+    const sheetC = ss.insertSheet("OdooConfig");
+    sheetC.appendRow(["Encrypted_Credentials", "Updated_At"]);
+    sheetC.getRange(1, 1, 1, 2).setBackground("#1a1f2e").setFontColor("#00e5ff").setFontWeight("bold");
   }
 
   return "Base de datos actualizada correctamente";
@@ -498,4 +506,38 @@ function getHistoricalData() {
     fecha: row[0], mes: row[1], anio: row[2], dian: row[3], siesa: row[4], faltantes: row[5], accuracy: row[6]
   }));
   return data.slice(-12);
+}
+
+/**
+ * Guarda la configuración de Odoo global de manera segura (cifrada con Fernet)
+ */
+function saveOdooConfig(data) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  let sheet = ss.getSheetByName("OdooConfig");
+  if (!sheet) {
+    sheet = ss.insertSheet("OdooConfig");
+    sheet.appendRow(["Encrypted_Credentials", "Updated_At"]);
+    sheet.getRange(1, 1, 1, 2).setBackground("#1a1f2e").setFontColor("#00e5ff").setFontWeight("bold");
+  }
+  
+  // Limpiar cualquier configuración previa para que solo haya 1 fila global
+  if (sheet.getLastRow() > 1) {
+    sheet.deleteRows(2, sheet.getLastRow() - 1);
+  }
+  
+  sheet.appendRow([data.encrypted_credentials, new Date()]);
+  return "Configuración guardada de manera segura";
+}
+
+/**
+ * Obtiene la configuración de Odoo global cifrada
+ */
+function getOdooConfig() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName("OdooConfig");
+  if (!sheet || sheet.getLastRow() < 2) {
+    return { configured: false };
+  }
+  const encrypted = sheet.getRange(2, 1).getValue();
+  return { configured: true, encrypted_credentials: encrypted };
 }

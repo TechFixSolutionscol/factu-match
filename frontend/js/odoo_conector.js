@@ -42,13 +42,44 @@ function setOdooStatus(connected, version) {
 // RESTAURAR SESIÓN ODOO AL CARGAR
 // ─────────────────────────────────────────────
 
-function checkOdooSession() {
+async function checkOdooSession() {
+  // 1. Intentar restaurar de forma local
   const saved = localStorage.getItem('odoo_credentials');
   if (saved) {
     odooCredentials = saved;
     odooConnected = true;
     setOdooStatus(true);
-    log('Sesión Odoo restaurada.', 'ok');
+    log('Sesión Odoo restaurada localmente.', 'ok');
+    return;
+  }
+
+  // 2. Si no hay local, consultar la configuración global en la nube (GAS)
+  log('Buscando configuración global de Odoo en la nube...', 'msg');
+  try {
+    const res = await callGASRobust("getOdooConfig");
+    if (res.success && res.data && res.data.configured) {
+      odooCredentials = res.data.encrypted_credentials;
+      odooConnected   = true;
+      localStorage.setItem('odoo_credentials', odooCredentials);
+      setOdooStatus(true);
+      log('Conexión Odoo restaurada desde la nube.', 'ok');
+      // Marcar campos como no editables y ocultar la API key por seguridad
+      ['odoo-url','odoo-db','odoo-user','odoo-key'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.value = id === 'odoo-key' ? '••••••••••••••••' : el.value;
+          el.disabled = true;
+        }
+      });
+      const saveBtn = document.getElementById('btn-odoo-save');
+      if (saveBtn) saveBtn.disabled = false; // allow re-saving if user explicitly wants
+    } else {
+      setOdooStatus(false);
+      log('Sin configuración global de Odoo.', 'msg');
+    }
+  } catch (e) {
+    console.error("Fallo al obtener configuración global de Odoo:", e);
+    setOdooStatus(false);
   }
 }
 checkOdooSession();
@@ -126,11 +157,32 @@ document.getElementById('btn-odoo-save').addEventListener('click', async () => {
       odooConnected   = true;
       localStorage.setItem('odoo_credentials', odooCredentials);
 
-      // Ocultar API key por seguridad
-      document.getElementById('odoo-key').value = '••••••••••••••••';
-      document.getElementById('odoo-key').type   = 'password';
+      // Guardar de forma centralizada en Google Sheets (GAS) para toda la organización
+      log('Sincronizando configuración de Odoo con la nube...', 'msg');
+      const gasRes = await callGASRobust("saveOdooConfig", { encrypted_credentials: odooCredentials });
+      if (gasRes.success) {
+        log('Configuración Odoo sincronizada en la nube.', 'ok');
+      } else {
+          log('Advertencia: No se pudo sincronizar en la nube: ' + gasRes.error, 'warn');
+          // Mostrar detalle al usuario
+          msgDiv.innerHTML = `<span class="t-warn">Guardado local OK, pero fallo al sincronizar con la nube: ${gasRes.error}</span>`;
+          // Dejar los campos editables para que el usuario pueda reintentar
+          return;
+      }
 
-      msgDiv.innerHTML = '<span class="t-ok">✔ CREDENCIALES GUARDADAS DE FORMA SEGURA</span>';
+      // Ocultar API key por seguridad
+        ['odoo-url','odoo-db','odoo-user','odoo-key'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) {
+            if (id === 'odoo-key') {
+              el.value = '••••••••••••••••';
+              el.type = 'password';
+            }
+            el.disabled = true;
+          }
+        });
+
+      msgDiv.innerHTML = '<span class="t-ok">✔ CREDENCIALES GUARDADAS Y COMPARTIDAS EN LA NUBE</span>';
       setOdooStatus(true, data.odoo_version);
       log('Credenciales Odoo encriptadas y guardadas.', 'ok');
     } else {
@@ -148,19 +200,25 @@ document.getElementById('btn-odoo-save').addEventListener('click', async () => {
 // DESCONECTAR ODOO
 // ─────────────────────────────────────────────
 
-document.getElementById('btn-odoo-disconnect').addEventListener('click', () => {
-  if (!confirm('¿Eliminar la configuración de Odoo guardada?')) return;
+document.getElementById('btn-odoo-disconnect').addEventListener('click', async () => {
+  if (!confirm('¿Eliminar la configuración de Odoo guardada en este equipo y en la nube?')) return;
+  
   localStorage.removeItem('odoo_credentials');
   odooCredentials = null;
   odooConnected   = false;
   setOdooStatus(false);
+
+  // Eliminar configuración centralizada de la nube (GAS)
+  log('Eliminando configuración de Odoo de la nube...', 'warn');
+  await callGASRobust("saveOdooConfig", { encrypted_credentials: "" });
+
   // Limpiar campos
   ['odoo-url', 'odoo-db', 'odoo-user', 'odoo-key'].forEach(id => {
     const el = document.getElementById(id);
     if (el) { el.value = ''; el.type = id === 'odoo-key' ? 'password' : 'text'; }
   });
-  document.getElementById('odoo-msg').innerHTML = '<span class="t-warn">Configuración eliminada.</span>';
-  log('Configuración Odoo eliminada.', 'warn');
+  document.getElementById('odoo-msg').innerHTML = '<span class="t-warn">Configuración eliminada de la nube y del equipo.</span>';
+  log('Configuración Odoo eliminada por completo.', 'warn');
 });
 
 // ─────────────────────────────────────────────
