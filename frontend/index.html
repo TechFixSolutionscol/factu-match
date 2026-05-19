@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FactuMatch</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<!-- LOGIN OVERLAY -->
+<div id="login-overlay">
+  <div class="login-card">
+    <div class="login-header">
+      <div class="brand-label">ACCESO RESTRINGIDO</div>
+      <div class="brand-version">V1.0.0</div>
+    </div>
+    <div class="login-input-group">
+      <label>USUARIO</label>
+      <input type="text" id="login-user" class="login-input" placeholder="ID DE USUARIO" />
+    </div>
+    <div class="login-input-group">
+      <label>CONTRASEÑA</label>
+      <div class="password-wrapper">
+        <input type="password" id="login-pass" class="login-input" placeholder="********" />
+        <div class="password-toggle" onclick="togglePassword('login-pass')">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+        </div>
+      </div>
+    </div>
+    <button class="btn btn-cyan btn-login" id="btn-login-submit">INGRESAR AL SISTEMA</button>
+    <div style="text-align:center; margin-top:15px;">
+      <a href="#" id="link-forgot-password" style="color:var(--text-dim); font-size:0.6rem; text-decoration:none; font-family:var(--mono);">¿OLVIDASTE TU CONTRASEÑA?</a>
+    </div>
+    <div id="login-error" style="color:var(--red); font-size:0.6rem; font-family:var(--mono); margin-top:10px; text-align:center;"></div>
+  </div>
+</div>
+
+<!-- FORGOT PASSWORD OVERLAY -->
+<div id="forgot-overlay" style="display:none;" class="overlay">
+  <div class="login-card">
+    <div class="login-header">
+      <div class="brand-label">RECUPERAR ACCESO</div>
+    </div>
+    <p style="color:var(--text-mid); font-size:0.6rem; font-family:var(--mono); margin-bottom:1rem;">Ingresa tu correo institucional para recibir un enlace de recuperación.</p>
+    <div class="login-input-group">
+      <label>CORREO ELECTRÓNICO</label>
+      <input type="email" id="forgot-email" class="login-input" placeholder="usuario@empresa.com" />
+    </div>
+    <button class="btn btn-cyan btn-login" id="btn-forgot-submit">ENVIAR ENLACE</button>
+    <button class="btn btn-outline" id="btn-forgot-back" style="width:100%; margin-top:10px; font-size:0.65rem;">VOLVER AL LOGIN</button>
+    <div id="forgot-msg" style="font-size:0.6rem; font-family:var(--mono); margin-top:10px; text-align:center;"></div>
+  </div>
+</div>
+
+<!-- DUPLICATE WARNING OVERLAY -->
+<div id="warning-overlay" style="display:none;" class="overlay">
+  <div class="login-card" style="border-color: var(--yellow); max-width: 400px;">
+    <div class="login-header">
+      <div class="brand-label" style="color: var(--yellow);">⚠ ADVERTENCIA DE DUPLICADO</div>
+    </div>
+    <div id="warning-content" style="color:var(--text); font-size:0.75rem; margin-bottom:1.5rem; line-height:1.6;">
+      Ya existen registros guardados para la fecha de hoy. <br><br>
+      Continuar guardará una nueva entrada en el historial, lo cual podría duplicar los datos en el tablero de control. <br><br>
+      <strong>¿Desea guardar de todos modos?</strong>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <button class="btn btn-cyan" id="btn-warning-force" style="flex:1; justify-content:center; background:var(--yellow); color:#000; border-color:var(--yellow);">✅ CONTINUAR</button>
+      <button class="btn btn-outline" id="btn-warning-cancel" style="flex:1; justify-content:center;">❌ CANCELAR</button>
+    </div>
+  </div>
+</div>
+
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-label">FactuMatch</div>
+    <div class="brand-version">V1.0.0</div>
+  </div>
+  <div class="nav-section">OPERACIONES</div>
+  <div class="nav-item active" id="nav-dashboard">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
+    DASHBOARD
+  </div>
+  <div class="nav-item" id="nav-comparisons">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
+    COMPARACIONES
+  </div>
+  <div class="nav-item" id="nav-logs">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+    REGISTROS LOGS
+  </div>
+   
+    <div class="nav-item" id="nav-users">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
+      GESTIÓN USUARIOS
+    </div>
+  <div class="nav-item" id="nav-config">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+    CONFIGURACION
+  </div>
+ <div class="sidebar-bottom">
+    <div class="nav-item" id="btn-logout">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9"/></svg>
+      CERRAR SESIÓN
+    </div>
+    </div>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <span class="topbar-title">TABLERO DE CONTROL</span>
+    <div style="display:flex; align-items:center; gap:2rem;">
+      <div id="user-display" style="font-family:var(--mono); font-size:0.6rem; color:var(--cyan); letter-spacing:0.1em; display:none; align-items:center; gap:0.5rem;">
+        <span class="status-badge" id="user-role-badge" style="font-size:0.5rem; padding:2px 6px;">ROLE</span>
+        <span id="user-name">...</span>
+      </div>
+      <div class="topbar-icons">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" id="nav-profile-btn" style="cursor:pointer;"><path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+    <!-- VIEW: COMPARISONS (Original) -->
+    <div id="view-comparisons" style="display:none;">
+      <div class="page-title">PROCESADOR DE ARCHIVOS</div>
+      <div class="page-sub">Inicie el flujo de conciliación cargando los reportes maestros.</div>
+
+    <div class="grid-main">
+      <!-- Panel principal -->
+      <div>
+        <div class="panel" style="margin-bottom:1rem;">
+          <div class="panel-header">
+            <div class="panel-title">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+              1. Cargar archivos
+            </div>
+            <span class="status-badge status-waiting" id="badge-estado">AWAITING INPUT</span>
+          </div>
+          <div class="panel-body">
+            <!-- MODO ERP SELECTOR -->
+            <div class="erp-mode-selector">
+              <label class="erp-mode-btn active" id="mode-btn-siesa">
+                <input type="radio" name="erp-mode" value="siesa" checked style="display:none;">
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                ARCHIVO SIESA
+              </label>
+              <label class="erp-mode-btn" id="mode-btn-odoo">
+                <input type="radio" name="erp-mode" value="odoo" style="display:none;">
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                API ODOO
+              </label>
+            </div>
+
+            <div class="upload-grid">
+              <div class="upload-zone" id="zona-dian">
+                <input type="file" accept=".xlsx,.xls" id="input-dian" />
+                <div class="upload-icon"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21v-8.25M15.75 21v-8.25M8.25 21v-8.25M3 9l9-6 9 6m-1.5 12V10.332A48.36 48.36 0 0012 9.75c-2.551 0-5.056.2-7.5.582V21M3 21h18M12 6.75h.008v.008H12V6.75z"/></svg></div>
+                <div class="upload-label">ARCHIVO DIAN</div>
+                <div class="upload-sub">Reporte de documentos emitidos<br>(XML/Excel)</div>
+                <div class="upload-filename" id="nombre-dian"></div>
+              </div>
+
+              <!-- MODO SIESA: upload de archivo -->
+              <div id="panel-siesa-upload">
+                <div class="upload-zone" id="zona-siesa">
+                  <input type="file" accept=".xlsx,.xls" id="input-siesa" />
+                  <div class="upload-icon"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg></div>
+                  <div class="upload-label">ARCHIVO DEL SISTEMA</div>
+                  <div class="upload-sub">Reporte de facturas por proveedor<br>(XLSX)</div>
+                  <div class="upload-filename" id="nombre-siesa"></div>
+                </div>
+              </div>
+
+              <!-- MODO ODOO: selector de fechas -->
+              <div id="panel-odoo-api" style="display:none;">
+                <div class="odoo-api-box">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:0.75rem;">
+                    <span class="status-dot" id="odoo-conn-dot" style="background:var(--text-dim);box-shadow:none;"></span>
+                    <span style="font-size:0.62rem;font-family:var(--mono);color:var(--text-dim);" id="odoo-conn-label">SIN CONFIGURAR — IR A CONFIGURACIÓN</span>
+                  </div>
+                  <div class="login-input-group" style="margin-bottom:0.6rem;">
+                    <label>PERIODO DESDE</label>
+                    <input type="date" id="odoo-date-from" class="login-input" />
+                  </div>
+                  <div class="login-input-group" style="margin-bottom:0.5rem;">
+                    <label>PERIODO HASTA</label>
+                    <input type="date" id="odoo-date-to" class="login-input" />
+                  </div>
+                  <div id="odoo-date-msg" style="font-size:0.6rem;font-family:var(--mono);min-height:16px;"></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="alerta-carga"></div>
+            <div class="btn-row">
+
+              <button class="btn btn-cyan" id="btn-comparar" disabled>
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
+                COMPARAR FACTURAS
+              </button>
+              <button class="btn btn-outline" id="btn-limpiar">
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
+                LIMPIAR
+              </button>
+              <!-- Botones ODOO (ocultos por defecto) -->
+              <button class="btn btn-cyan" id="btn-odoo-comparar" style="display:none;" disabled>
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                COMPARAR CON ODOO
+              </button>
+              <button class="btn btn-outline" id="btn-odoo-download" style="display:none;" disabled>
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+                EXPORTAR EXCEL ODOO
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel derecho -->
+      <div style="display:flex; flex-direction:column; gap:1rem;">
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">SYSTEM STATUS</div></div>
+          <div class="panel-body">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+              <span class="status-dot"></span>
+              <span style="font-size:0.62rem;font-family:var(--mono);color:var(--text-dim);">ONLINE</span>
+            </div>
+            <div class="system-status-val" id="pct-completitud">—</div>
+            <div class="system-status-label">MATCH ACCURACY</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">ÚLTIMOS PROCESOS</div></div>
+          <div class="panel-body" style="padding:0.5rem 1rem;" id="panel-logs">
+            <div class="log-item" id="log-placeholder">
+              <div class="log-dot pending"></div>
+              <div>
+                <div class="log-name" style="color:var(--text-dim);">Sin procesos aún</div>
+                <div class="log-date">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RESULTADO -->
+    <div id="seccion-resultado">
+      <div class="metricas">
+        <div class="metrica"><div class="metrica-val" id="m-proveedores">—</div><div class="metrica-label">PROVEEDORES</div></div>
+        <div class="metrica"><div class="metrica-val" id="m-dian">—</div><div class="metrica-label">FACTURAS DIAN</div></div>
+        <div class="metrica"><div class="metrica-val ok" id="m-siesa">—</div><div class="metrica-label">EN SIESA</div></div>
+        <div class="metrica"><div class="metrica-val danger" id="m-faltantes">—</div><div class="metrica-label">FALTANTES</div></div>
+      </div>
+      <div class="barra-wrap">
+        <div class="barra-header">
+          <span class="barra-title">COMPLETITUD GENERAL</span>
+          <span class="barra-pct" id="pct-barra">—</span>
+        </div>
+        <div class="barra-track"><div class="barra-fill" id="barra-fill" style="width:0%"></div></div>
+      </div>
+      <div class="panel" style="margin-bottom:1rem;">
+        <div class="panel-header">
+          <div class="panel-title">INFORME GENERADO</div>
+          <button class="btn btn-green" id="btn-descargar" style="font-size:0.68rem;padding:4px 11px;">
+            <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+            EXPORTAR EXCEL
+          </button>
+        </div>
+        <div class="panel-body"><div class="narrativa-box" id="narrativa-texto">—</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">DETALLE POR PROVEEDOR</div></div>
+        <div class="panel-body" style="padding:0.75rem;"><div id="lista-proveedores"></div></div>
+      </div>
+    </div> <!-- Cierre de seccion-resultado -->
+  </div> <!-- Cierre de view-comparisons -->
+
+    <!-- VIEW: DASHBOARD (New) -->
+    <div id="view-dashboard" style="display:block;">
+      <div class="page-title">TABLERO DE CONTROL HISTÓRICO</div>
+      <div class="page-sub">Análisis consolidado de cierres mensuales.</div>
+      
+      <div class="metricas">
+        <div class="metrica"><div class="metrica-val" id="d-total-meses">—</div><div class="metrica-label">MESES CERRADOS</div></div>
+        <div class="metrica"><div class="metrica-val" id="d-promedio-accuracy">—</div><div class="metrica-label">PROM. PRECISIÓN</div></div>
+        <div class="metrica"><div class="metrica-val ok" id="d-total-encontradas">—</div><div class="metrica-label">TOTAL REGISTROS</div></div>
+        <div class="metrica"><div class="metrica-val danger" id="d-total-faltantes">—</div><div class="metrica-label">TOTAL FALTANTES</div></div>
+      </div>
+
+      <div class="dashboard-grid">
+        <div class="chart-container">
+          <canvas id="chart-historico"></canvas>
+        </div>
+        <div class="chart-container">
+          <canvas id="chart-accuracy"></canvas>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:1rem;">
+        <div class="panel-header"><div class="panel-title">REGISTROS HISTÓRICOS RECIENTES</div></div>
+        <div class="panel-body" style="padding:0;">
+          <table style="width:100%; border-collapse:collapse; font-family:var(--mono); font-size:0.7rem; color:var(--text-mid);">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02);">
+                <th style="padding:0.75rem; text-align:left;">FECHA</th>
+                <th style="padding:0.75rem; text-align:left;">PERIODO</th>
+                <th style="padding:0.75rem; text-align:right;">DIAN</th>
+                <th style="padding:0.75rem; text-align:right;">SIESA</th>
+                <th style="padding:0.75rem; text-align:right;">FALTANTES</th>
+                <th style="padding:0.75rem; text-align:right;">% ACCURACY</th>
+              </tr>
+            </thead>
+            <tbody id="tabla-historico-body">
+              <!-- Datos dinámicos -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW: LOGS (New) -->
+    <div id="view-logs">
+      <div class="page-title">REGISTROS DEL SISTEMA (LIVE TERMINAL)</div>
+      <div class="page-sub">Monitoreo en tiempo real de operaciones y depuración.</div>
+      
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">TERMINAL DE SALIDA</div>
+        </div>
+        <div class="panel-body">
+          <div class="terminal" id="terminal" style="max-height: 500px; height: 500px;">
+            <span class="t-line"><span class="t-time">[--:--:--]</span><span class="t-msg">Terminal vinculada a DATA LOGS. Esperando eventos...</span></span>
+          </div>
+        </div>
+    </div>
+  </div>
+    
+    <!-- VIEW: USERS (Expanded) -->
+    <div id="view-users" style="display:none;">
+      <div class="page-title">GESTIÓN DE ACCESOS</div>
+      <div class="page-sub">Administre los usuarios y sus niveles de permiso.</div>
+      
+      <div class="grid-main" style="grid-template-columns: 320px 1fr;">
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">REGISTRAR NUEVO</div></div>
+          <div class="panel-body">
+            <div class="login-input-group">
+              <label>NOMBRE COMPLETO</label>
+              <input type="text" id="new-user-name" class="login-input" />
+            </div>
+            <div class="login-input-group">
+              <label>CORREO INSTITUCIONAL</label>
+              <input type="email" id="new-user-email" class="login-input" />
+            </div>
+            <div class="login-input-group">
+              <label>ROL ASIGNADO</label>
+              <select id="new-user-role" class="login-input" style="appearance:none; background-image:url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%235a6480%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C/polyline%3E%3C/svg%3E'); background-repeat:no-repeat; background-position:right 10px center; background-size:16px;">
+                <option value="Operador">Operador</option>
+                <option value="Admin">Administrador</option>
+                <option value="Lectura">Solo Lectura</option>
+              </select>
+            </div>
+            <div id="new-user-msg" style="font-size:0.6rem; font-family:var(--mono); margin-bottom:1rem;"></div>
+            <button class="btn btn-cyan" id="btn-create-user" style="width:100%; justify-content:center;">ENVIAR INVITACIÓN</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">USUARIOS REGISTRADOS</div>
+            <div id="users-count" style="font-size:0.6rem; color:var(--text-dim);">... registros</div>
+          </div>
+          <div class="panel-body" style="padding:0;">
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-family:var(--mono); font-size:0.65rem;">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02);">
+                    <th style="padding:10px; text-align:left; color:var(--text-dim);">USUARIO / CORREO</th>
+                    <th style="padding:10px; text-align:center; color:var(--text-dim);">ROL</th>
+                    <th style="padding:10px; text-align:center; color:var(--text-dim);">ESTADO</th>
+                    <th style="padding:10px; text-align:center; color:var(--text-dim);">ÚLTIMO ACCESO</th>
+                    <th style="padding:10px; text-align:right; color:var(--text-dim);">ACCIONES</th>
+                  </tr>
+                </thead>
+                <tbody id="users-table-body">
+                  <!-- Datos dinámicos -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW: PROFILE (New) -->
+    <div id="view-profile" style="display:none;">
+      <div class="page-title">MI PERFIL DE USUARIO</div>
+      <div class="page-sub">Gestione sus datos personales y preferencias de seguridad.</div>
+      
+      <div class="grid-main" style="grid-template-columns: 1fr 1fr;">
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">DATOS PERSONALES</div></div>
+          <div class="panel-body">
+            <div class="login-input-group">
+              <label>NOMBRE COMPLETO</label>
+              <input type="text" id="profile-name" class="login-input" />
+            </div>
+            <div class="login-input-group">
+              <label>CORREO ELECTRÓNICO</label>
+              <input type="text" id="profile-email" class="login-input" disabled style="opacity:0.5;" />
+            </div>
+            <button class="btn btn-cyan" id="btn-update-profile" style="width:100%; justify-content:center;">GUARDAR CAMBIOS</button>
+            <div id="profile-msg" style="font-size:0.6rem; font-family:var(--mono); margin-top:10px; text-align:center;"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">SEGURIDAD (CAMBIAR CONTRASEÑA)</div></div>
+          <div class="panel-body">
+            <div class="login-input-group">
+              <label>CONTRASEÑA ACTUAL</label>
+              <input type="password" id="pass-old" class="login-input" />
+            </div>
+            <div class="login-input-group">
+              <label>NUEVA CONTRASEÑA</label>
+              <input type="password" id="pass-new" class="login-input" />
+            </div>
+            <div class="login-input-group">
+              <label>CONFIRMAR NUEVA</label>
+              <input type="password" id="pass-confirm" class="login-input" />
+            </div>
+            <p style="font-size:0.55rem; color:var(--text-dim); margin-bottom:1rem;">Mínimo 8 caracteres, incluye una mayúscula y un número.</p>
+            <button class="btn btn-outline" id="btn-update-pass" style="width:100%; justify-content:center; color:var(--cyan); border-color:var(--cyan);">ACTUALIZAR CONTRASEÑA</button>
+            <div id="pass-msg" style="font-size:0.6rem; font-family:var(--mono); margin-top:10px; text-align:center;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW: CONFIG ODOO -->
+  <div id="view-config" style="display:none;">
+    <div class="page-title">CONFIGURACIÓN DEL SISTEMA</div>
+    <div class="page-sub">Conecte su instancia de Odoo ERP para comparar facturas en tiempo real.</div>
+
+    <div class="grid-main" style="grid-template-columns: 1fr 380px;">
+      <!-- Panel: Formulario credenciales -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+            CONEXIÓN ODOO ERP
+          </div>
+          <span id="odoo-status-badge" class="status-badge" style="color:var(--text-dim);border-color:var(--border);">SIN CONFIGURAR</span>
+        </div>
+        <div class="panel-body">
+          <div class="login-input-group">
+            <label>URL DE LA INSTANCIA</label>
+            <input type="text" id="odoo-url" class="login-input" placeholder="https://miempresa.odoo.com" />
+          </div>
+          <div class="login-input-group">
+            <label>BASE DE DATOS</label>
+            <input type="text" id="odoo-db" class="login-input" placeholder="nombre_base_de_datos" />
+          </div>
+          <div class="login-input-group">
+            <label>USUARIO (EMAIL)</label>
+            <input type="text" id="odoo-user" class="login-input" placeholder="admin@empresa.com" />
+          </div>
+          <div class="login-input-group">
+            <label>API KEY</label>
+            <div class="password-wrapper">
+              <input type="password" id="odoo-key" class="login-input" placeholder="Clave API generada en Odoo" />
+              <div class="password-toggle" onclick="togglePassword('odoo-key')">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+              </div>
+            </div>
+          </div>
+          <div id="odoo-msg" style="font-size:0.62rem; font-family:var(--mono); min-height:20px; margin-bottom:0.75rem;"></div>
+          <div class="btn-row">
+            <button class="btn btn-outline" id="btn-odoo-test" style="flex:1; justify-content:center;">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              PROBAR CONEXIÓN
+            </button>
+            <button class="btn btn-cyan" id="btn-odoo-save" style="flex:1; justify-content:center;" disabled>
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16v2a2 2 0 01-2 2H5a2 2 0 01-2-2v-2m3-5l4 4 4-4m-4 4V4"/></svg>
+              GUARDAR CREDENCIALES
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel: Guía paso a paso -->
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">GUÍA RÁPIDA — CÓMO OBTENER LA API KEY</div></div>
+        <div class="panel-body" style="font-family:var(--mono); font-size:0.65rem; line-height:1.9; color:var(--text-mid);">
+          <div style="display:flex;flex-direction:column;gap:0.75rem;">
+            <div class="guide-step">
+              <span class="guide-num">01</span>
+              <span>Ingresa a tu instancia Odoo con tu usuario administrador.</span>
+            </div>
+            <div class="guide-step">
+              <span class="guide-num">02</span>
+              <span>Haz clic en tu <strong style="color:var(--cyan);">avatar</strong> (esquina superior derecha) → <strong style="color:var(--cyan);">Preferencias</strong>.</span>
+            </div>
+            <div class="guide-step">
+              <span class="guide-num">03</span>
+              <span>Busca la pestaña <strong style="color:var(--cyan);">Seguridad de la cuenta</strong> o <strong style="color:var(--cyan);">Account Security</strong>.</span>
+            </div>
+            <div class="guide-step">
+              <span class="guide-num">04</span>
+              <span>Clic en <strong style="color:var(--cyan);">Claves API</strong> → <strong style="color:var(--cyan);">Nueva clave</strong>.</span>
+            </div>
+            <div class="guide-step">
+              <span class="guide-num">05</span>
+              <span>Nombórala <em style="color:var(--green);">FactuMatch</em>, copia el token generado y pégalo arriba.</span>
+            </div>
+            <div style="margin-top:0.5rem; padding:0.6rem; background:rgba(0,229,255,0.05); border:1px solid var(--border); border-radius:4px; font-size:0.6rem; color:var(--text-dim);">
+              ⚠ La API Key solo se muestra una vez. Guárdala en un lugar seguro.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel: Estado de conexión activa -->
+    <div id="odoo-compare-panel" style="display:none; margin-top:1rem;" class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="status-dot"></span>
+          CONEXIÓN ACTIVA
+        </div>
+        <button class="btn btn-outline" id="btn-odoo-disconnect" style="font-size:0.6rem; padding:3px 10px; color:var(--red); border-color:var(--red);">DESCONECTAR</button>
+      </div>
+      <div class="panel-body" style="font-family:var(--mono); font-size:0.7rem; color:var(--text-mid);">
+        <span id="odoo-connected-info">Credenciales guardadas correctamente. Ya puede usar el modo API ODOO en la sección de Comparaciones.</span>
+        <button class="btn btn-cyan" onclick="switchView('comparisons')" style="margin-top:1rem; font-size:0.65rem;">
+          IR A COMPARACIONES →
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/app.js"></script>
+<script src="js/odoo_conector.js"></script>
+</body>
+</html>
