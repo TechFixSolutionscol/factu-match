@@ -201,15 +201,15 @@ async def odoo_descargar_reporte(
 
 class ItemBanco(BaseModel):
     id: str
-    date: str
-    description: str
-    document: str
+    date: str = ""
+    description: str = ""
+    document: str = ""
     amount: float
 
 class ItemERP(BaseModel):
     id: str
-    date: str
-    reference: str
+    date: str = ""
+    reference: str = ""
     amount: float
 
 class ReconciliacionIARequest(BaseModel):
@@ -224,9 +224,20 @@ async def conciliar_con_ia(req: ReconciliacionIARequest):
         banco_list = req.banco[:150]
         erp_list = req.erp[:150]
         
+        print(f"[IA] Procesando {len(banco_list)} registros bancarios y {len(erp_list)} registros ERP")
+        
         matches = await buscar_matches_semanticos_groq(banco_list, erp_list)
-        return {"success": True, "matches": matches}
+        
+        print(f"[IA] Se encontraron {len(matches)} coincidencias")
+        
+        return {
+            "success": True,
+            "matches": matches,
+            "total_procesados": len(banco_list) + len(erp_list),
+            "coincidencias": len(matches)
+        }
     except Exception as e:
+        print(f"[IA] Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error en IA: {str(e)}")
 
 async def buscar_matches_semanticos_groq(banco: List[ItemBanco], erp: List[ItemERP]) -> list:

@@ -170,14 +170,18 @@ function normalizeBankData(rows) {
       amount = amtKey ? r[amtKey] : 0;
     }
 
+    // Conversión de tipos
     if (typeof amount === 'string') amount = parseFloat(amount.replace(/[^\d.-]/g, '')) || 0;
+    if (typeof amount !== 'number') amount = 0;
     if (typeof desc === 'object') desc = JSON.stringify(desc);
+    date = String(date || '');
+    doc = String(doc || '');
 
     return {
       id: `B-${index}`,
       date: date,
       description: desc,
-      document: doc, // Añadido documento para matching
+      document: doc,
       amount: amount,
       original: r
     };
@@ -210,7 +214,11 @@ function normalizeERPData(rows) {
         amount = vals[vals.length - 1] || 0;
     }
 
+    // Conversión de tipos
     if (typeof amount === 'string') amount = parseFloat(amount.replace(/[^\d.-]/g, '')) || 0;
+    if (typeof amount !== 'number') amount = 0;
+    date = String(date || '');
+    ref = String(ref || '');
 
     return {
       id: `E-${index}`,
@@ -420,10 +428,43 @@ async function runAIReconciliation() {
   btn.disabled = true;
 
   try {
+    // Filtrar solo los campos que el backend espera (sin "original")
+    // Asegurarse de convertir amount a número y date a string
+    // Validar que los datos sean válidos antes de enviar
     const payload = {
-      banco: r.unmatchedBank,
+      banco: r.unmatchedBank
+        .map(b => {
+          const amount = parseFloat(b.amount) || 0;
+          if (amount === 0) return null; // Filtrar montos cero
+          return {
+            id: String(b.id || 'B-unknown'),
+            date: String(b.date || ''),
+            description: String(b.description || ''),
+            document: String(b.document || ''),
+            amount: amount
+          };
+        })
+        .filter(b => b !== null),
       erp: r.unmatchedERP
+        .map(e => {
+          const amount = parseFloat(e.amount) || 0;
+          if (amount === 0) return null; // Filtrar montos cero
+          return {
+            id: String(e.id || 'E-unknown'),
+            date: String(e.date || ''),
+            reference: String(e.reference || ''),
+            amount: amount
+          };
+        })
+        .filter(e => e !== null)
     };
+
+    // Validación: no enviar si no hay datos suficientes
+    if (payload.banco.length === 0 || payload.erp.length === 0) {
+      throw new Error("Datos bancarios o ERP inválidos después de filtrado");
+    }
+
+    console.log('Payload validado a enviar:', JSON.stringify(payload, null, 2));
 
     const response = await fetch(`${API_URL}/conciliar-ia`, {
       method: "POST",
@@ -466,7 +507,7 @@ async function runAIReconciliation() {
       });
 
       if (matchesCount > 0) {
-        alert(`¡Inteligencia Artificial aplicada! Se encontraron ${matchesCount} cruces semánticos.`);
+        alert(`✓ ÉXITO: La IA encontró ${matchesCount} cruces semánticos (coincidencias de banco con facturas ERP).\n\nEstos registros han sido movidos a la pestaña "Coincidencias".`);
         // Cambiar pestaña activa a matches para que el usuario lo vea de inmediato
         currentReconTab = 'matches';
         document.querySelectorAll(".recon-tab-btn").forEach(b => {
@@ -482,15 +523,29 @@ async function runAIReconciliation() {
         }
         renderReconciliationResults();
       } else {
-        alert("La IA procesó los datos pero no encontró cruces con alta certeza.");
+        const unmatchedCount = r.unmatchedBank.length + r.unmatchedERP.length;
+        alert(`⚠ La IA analizó ${payload.banco.length + payload.erp.length} registros pero NO ENCONTRÓ COINCIDENCIAS CON ALTA CERTEZA (>80%).\n\nQuedan ${unmatchedCount} registros sin conciliar.\n\nEsto puede deberse a:\n• Información incompleta o inconsistente en los datos\n• Referencias banco/ERP muy diferentes\n• Montos que no coinciden\n\nRevisá manualmente o intenta limpiar los datos.`);
       }
     } else {
-      alert("La IA analizó los datos pero no encontró cruces seguros (>80% certeza).");
+      const unmatchedCount = r.unmatchedBank.length + r.unmatchedERP.length;
+      alert(`⚠ La IA procesó los datos pero no logró procesar la solicitud correctamente.\n\nQuedan ${unmatchedCount} registros sin conciliar.\n\nPor favor, revisá la consola del navegador (F12) para más detalles.`);
     }
 
   } catch (err) {
-    console.error(err);
-    alert("Error de conexión con la IA: " + err.message);
+    console.error('Error en runAIReconciliation:', err);
+    let mensajeError = "Error al procesar la solicitud de IA";
+    
+    if (err.message.includes("422")) {
+      mensajeError = "Error de validación: Los datos enviados no tienen el formato correcto. Revisa la consola (F12) para más detalles.";
+    } else if (err.message.includes("Failed to fetch")) {
+      mensajeError = "No se pudo conectar con el servidor de IA. Verifica tu conexión a internet.";
+    } else if (err.message.includes("timeout")) {
+      mensajeError = "El servidor tardó demasiado en responder. Intenta de nuevo más tarde.";
+    } else {
+      mensajeError = err.message || "Error desconocido";
+    }
+    
+    alert(`❌ ${mensajeError}`);
   } finally {
     btn.innerHTML = originalHtml;
     btn.disabled = false;
