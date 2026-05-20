@@ -135,33 +135,51 @@ function checkSession() {
 checkSession();
 
 /* --- GESTIÓN DE VISTAS --- */
-function switchView(view) {
-  const views = ['dashboard', 'comparisons', 'logs', 'users', 'profile', 'config', 'reconciliation'];
+function switchView(viewId) {
+  // Ocultar todas las vistas
+  const views = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'logs', 'users', 'config', 'profile'];
   views.forEach(v => {
     const el = document.getElementById(`view-${v}`);
-    if (el) el.style.display = v === view ? 'block' : 'none';
-    const nav = document.getElementById(`nav-${v}`);
-    if (nav) nav.classList.toggle("active", v === view);
+    if (el) el.style.display = 'none';
   });
+
+  // Mostrar la vista seleccionada
+  const activeView = document.getElementById(`view-${viewId}`);
+  if (activeView) activeView.style.display = 'block';
+
+  // Remover activo de todos los nav items
+  const navs = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'logs', 'users', 'config', 'profile-btn'];
+  navs.forEach(n => {
+    const el = document.getElementById(`nav-${n}`);
+    if (el) el.classList.remove('active');
+  });
+
+  // Activar el nav item correspondiente
+  const activeNav = document.getElementById(`nav-${viewId === 'profile' ? 'profile-btn' : viewId}`);
+  if (activeNav) activeNav.classList.add('active');
 
   const titles = {
     dashboard: 'TABLERO DE CONTROL',
     comparisons: 'PROCESAMIENTO DE ARCHIVOS',
     reconciliation: 'CONCILIACIÓN BANCARIA',
+    checklist: 'CHECKLIST MENSUAL (AUDITOR IA)',
     logs: 'REGISTROS DEL SISTEMA',
     users: 'GESTIÓN DE USUARIOS',
     profile: 'MI PERFIL DE USUARIO',
-    config: 'CONFIGURACIÓN DEL SISTEMA'
+    config: 'CONFIGURACIÓN DEL SISTEMA',
+    auditor: 'AUDITORÍA TRIBUTARIA'
   };
   
-  document.querySelector(".topbar-title").textContent = titles[view] || 'SISTEMA';
+  document.querySelector(".topbar-title").textContent = titles[viewId] || 'SISTEMA';
   
-  if (view === 'dashboard') cargarStats();
-  if (view === 'users') loadUsersTable();
+  if (viewId === 'dashboard') cargarStats();
+  if (viewId === 'users') loadUsersTable();
 }
 
 document.getElementById("nav-dashboard").addEventListener("click", () => switchView('dashboard'));
+document.getElementById("nav-auditor").addEventListener("click", () => switchView('auditor'));
 document.getElementById("nav-comparisons").addEventListener("click", () => switchView('comparisons'));
+document.getElementById("nav-checklist").addEventListener("click", () => switchView('checklist'));
 document.getElementById("nav-reconciliation").addEventListener("click", () => switchView('reconciliation'));
 document.getElementById("nav-logs").addEventListener("click", () => switchView('logs'));
 document.getElementById("nav-users").addEventListener("click", () => switchView('users'));

@@ -8,8 +8,11 @@ import httpx
 from pydantic import BaseModel
 from typing import List, Optional
 from comparador import comparar_facturas, comparar_facturas_odoo, generar_excel_reporte
-from odoo_match import OdooConnector, CredentialManager
-
+from odoo_match import OdooConnector, CredentialManager, _normalizar_clave_odoo, _normalizar_nit_odoo
+from email_parser import process_emails, connect_db
+from ai_auditor import build_odoo_context, run_ai_audit
+from datetime import datetime, timedelta
+import psycopg2.extras
 app = FastAPI(title="Comparador Facturas DIAN vs Siesa")
 
 app.add_middleware(
@@ -371,3 +374,190 @@ def generar_narrativa_local(resultado: dict) -> str:
                 lineas.append(f"   Facturas faltantes: {', '.join(f['factura'] for f in p['faltantes'])}")
 
     return "\n".join(lineas)
+
+# ──────────────────────────────────────────────
+# ENDPOINTS RECEPCIÓN FACTURAS (IMAP/XML)
+# ──────────────────────────────────────────────
+
+@app.post("/sync-emails")
+async def sync_invoices_from_email():
+    """
+    Se conecta al buzón configurado vía IMAP, busca facturas ZIP/XML
+    no leídas y las guarda en la base de datos de Neon PostgreSQL.
+    """
+    try:
+        resultado = process_emails()
+        if resultado.get("status") == "error":
+            raise HTTPException(status_code=500, detail=resultado.get("message"))
+        return resultado
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error inesperado procesando correos: {str(e)}")
+
+# ──────────────────────────────────────────────
+# ENDPOINTS DASHBOARD DE AUDITORÍA (FASE 2)
+# ──────────────────────────────────────────────
+
+@app.get("/api/dashboard-auditoria")
+async def get_dashboard_data(month: int = None, year: int = None):
+    """Retorna las métricas y la lista de facturas faltantes."""
+    try:
+        db = connect_db()
+        cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        query = "SELECT * FROM electronic_documents"
+        params = []
+        if month and year:
+            query += " WHERE EXTRACT(MONTH FROM issue_date) = %s AND EXTRACT(YEAR FROM issue_date) = %s"
+            params.extend([month, year])
+            
+        query += " ORDER BY issue_date DESC"
+        
+        cursor.execute(query, tuple(params))
+        documents = cursor.fetchall()
+        
+        total_recibidas = len(documents)
+        total_cruzadas = sum(1 for d in documents if d['erp_sync_status'] == 'MATCHED')
+        total_faltantes = sum(1 for d in documents if d['erp_sync_status'] != 'MATCHED')
+        
+        return {
+            "success": True,
+            "metrics": {
+                "total_recibidas": total_recibidas,
+                "total_cruzadas": total_cruzadas,
+                "total_faltantes": total_faltantes,
+                "accuracy": round((total_cruzadas / total_recibidas * 100) if total_recibidas > 0 else 0, 1)
+            },
+            "faltantes": [d for d in documents if d['erp_sync_status'] != 'MATCHED']
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error cargando dashboard: {str(e)}")
+    finally:
+        if 'db' in locals() and db:
+            db.close()
+
+@app.post("/api/sync-odoo-invoices")
+async def sync_odoo_invoices(credentials: str = Form(...), date_from: str = Form(...), date_to: str = Form(...)):
+    """Busca facturas UNMATCHED en DB local y las intenta cruzar contra Odoo."""
+    try:
+        manager = CredentialManager()
+        creds = manager.decrypt(credentials)
+        
+        connector = OdooConnector(
+            url=creds["url"],
+            database=creds["database"],
+            username=creds["username"],
+            api_key=creds["api_key"]
+        )
+        
+        # Traer facturas de Odoo en el rango
+        facturas_odoo = connector.fetch_invoices(date_from=date_from, date_to=date_to)
+        
+        db = connect_db()
+        cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        cursor.execute("SELECT * FROM electronic_documents WHERE erp_sync_status != 'MATCHED'")
+        pendientes = cursor.fetchall()
+        
+        matches_encontrados = 0
+        
+        for p in pendientes:
+            p_nit = _normalizar_nit_odoo(p['supplier_nit'])
+            p_numero = _normalizar_clave_odoo(p['document_number'])
+            
+            # Buscar en odoo (tolerando que Odoo tenga el dígito de verificación al final)
+            match = None
+            for o in facturas_odoo:
+                o_nit = _normalizar_nit_odoo(o['nit'])
+                o_numero = _normalizar_clave_odoo(o['factura_clave'])
+                
+                nit_match = (o_nit == p_nit) or (o_nit.startswith(p_nit) and len(o_nit) - len(p_nit) <= 1) or (p_nit.startswith(o_nit) and len(p_nit) - len(o_nit) <= 1)
+                
+                if nit_match and o_numero == p_numero:
+                    match = o
+                    break
+            
+            if match:
+                # Actualizar DB
+                cursor.execute(
+                    "UPDATE electronic_documents SET erp_sync_status = 'MATCHED', erp_reference_id = %s WHERE id = %s",
+                    (match.get('factura_original', 'ODOO'), p['id'])
+                )
+                matches_encontrados += 1
+                
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": f"Se encontraron {matches_encontrados} nuevas coincidencias en Odoo.",
+            "nuevos_matches": matches_encontrados
+        }
+        
+    except Exception as e:
+        if 'db' in locals() and db:
+            db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error en sincronización con Odoo: {str(e)}")
+    finally:
+        if 'db' in locals() and db:
+            db.close()
+
+
+# ──────────────────────────────────────────────
+# AUDITOR IA: CHECKLIST MENSUAL CON GROQ
+# ──────────────────────────────────────────────
+
+@app.post("/api/run-ai-checklist")
+async def run_ai_checklist(
+    month: str = Form(...),
+    year: str = Form(...),
+    groq_key: str = Form(...),
+    credentials: Optional[str] = Form(None),
+    odoo_url: Optional[str] = Form(None),
+    odoo_db: Optional[str] = Form(None),
+    odoo_user: Optional[str] = Form(None),
+    odoo_pass: Optional[str] = Form(None),
+):
+    """Ejecuta el auditor contable IA usando Groq sobre datos de Odoo."""
+    try:
+        # Resolver credenciales de Odoo
+        if credentials:
+            mgr = CredentialManager()
+            creds = mgr.decrypt(credentials)
+        elif odoo_url and odoo_db and odoo_user and odoo_pass:
+            creds = {"url": odoo_url, "database": odoo_db, "username": odoo_user, "api_key": odoo_pass}
+        else:
+            raise HTTPException(status_code=400, detail="Credenciales de Odoo requeridas. Configúralas en Configuración.")
+
+        connector = OdooConnector(
+            url=creds["url"],
+            database=creds["database"],
+            username=creds["username"],
+            api_key=creds["api_key"]
+        )
+        connector.authenticate()
+
+        # Construir el rango del mes solicitado
+        from calendar import monthrange
+        m, y = int(month), int(year)
+        days_in_month = monthrange(y, m)[1]
+        date_from = f"{y:04d}-{m:02d}-01"
+        date_to = f"{y:04d}-{m:02d}-{days_in_month:02d}"
+
+        # Extraer contexto contable de Odoo
+        context = build_odoo_context(connector, date_from, date_to)
+
+        # Pasar al motor IA
+        anomalias = run_ai_audit(context, groq_key)
+
+        return {
+            "success": True,
+            "periodo": f"{date_from} / {date_to}",
+            "total_facturas_analizadas": context["total_facturas"],
+            "anomalias": anomalias
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en Auditor IA: {str(e)}")

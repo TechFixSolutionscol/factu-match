@@ -209,7 +209,6 @@ class OdooConnector:
                         "name",                        # Secuencia interna Odoo: "BILL/2025/00001"
                         "invoice_date",                # Fecha de la factura
                         "ref",                         # Referencia del proveedor (su número de factura)
-                        "l10n_latam_document_number",  # Número documento LATAM (Odoo 14+ Colombia)
                         "partner_id",                  # Proveedor [id, nombre]
                         "move_type",                   # in_invoice / in_refund
                         "amount_total_signed",         # Total con signo
