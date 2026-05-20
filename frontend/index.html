@@ -6,6 +6,7 @@
   <title>FactuMatch</title>
   <link rel="stylesheet" href="css/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -85,6 +86,14 @@
   <div class="nav-item" id="nav-comparisons">
     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
     COMPARACIONES
+  </div>
+  <div class="nav-item" id="nav-checklist">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+    CHECKLIST MENSUAL
+  </div>
+  <div class="nav-item" id="nav-reconciliation">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v12m-3-2.818l.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+    CONCILIACIÓN BANCARIA
   </div>
   <div class="nav-item" id="nav-logs">
     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
@@ -278,6 +287,110 @@
       </div>
     </div> <!-- Cierre de seccion-resultado -->
   </div> <!-- Cierre de view-comparisons -->
+
+    <!-- VIEW: RECONCILIATION -->
+    <div id="view-reconciliation" style="display:none;">
+      <div class="page-title">CONCILIACIÓN BANCARIA</div>
+      <div class="page-sub">Cruce extractos bancarios contra movimientos del ERP (Facturas / Pagos).</div>
+
+      <div class="grid-main">
+        <!-- Panel principal -->
+        <div>
+          <div class="panel" style="margin-bottom:1rem;">
+            <div class="panel-header">
+              <div class="panel-title">1. Origen de Datos</div>
+            </div>
+            <div class="panel-body">
+              <div class="upload-grid">
+                <!-- Zona Extracto Banco -->
+                <div class="upload-zone" id="zona-banco">
+                  <input type="file" accept=".xlsx,.xls" id="input-banco" />
+                  <div class="upload-icon"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z"/></svg></div>
+                  <div class="upload-label">EXTRACTO BANCARIO</div>
+                  <div class="upload-sub">Archivo XLSX (Ej: Bancolombia)</div>
+                  <div class="upload-filename" id="nombre-banco"></div>
+                </div>
+
+                <!-- Zona ERP (Re-usa diseño de SIESA) -->
+                <div class="upload-zone" id="zona-erp-banco">
+                  <input type="file" accept=".xlsx,.xls" id="input-erp-banco" />
+                  <div class="upload-icon"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg></div>
+                  <div class="upload-label">ARCHIVO ERP (MOVIMIENTOS)</div>
+                  <div class="upload-sub">Facturas/Pagos SIESA o mock Odoo (XLSX)</div>
+                  <div class="upload-filename" id="nombre-erp-banco"></div>
+                </div>
+              </div>
+              <div id="alerta-recon"></div>
+              <div class="btn-row">
+                <button class="btn btn-cyan" id="btn-conciliar" disabled>EJECUTAR CONCILIACIÓN</button>
+                <button class="btn btn-outline" id="btn-limpiar-recon">LIMPIAR</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- Panel derecho -->
+        <div style="display:flex; flex-direction:column; gap:1rem;">
+          <div class="panel">
+            <div class="panel-header"><div class="panel-title">ESTADO CONCILIACIÓN</div></div>
+            <div class="panel-body">
+              <div class="system-status-val" id="recon-pct-completitud">—</div>
+              <div class="system-status-label">% MOVIMIENTOS CONCILIADOS</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resultados Conciliación -->
+      <div id="recon-seccion-resultado" style="display:none;">
+        <div class="metricas">
+          <div class="metrica"><div class="metrica-val" id="r-banco">—</div><div class="metrica-label">MOV. BANCO</div></div>
+          <div class="metrica"><div class="metrica-val" id="r-erp">—</div><div class="metrica-label">MOV. ERP</div></div>
+          <div class="metrica"><div class="metrica-val ok" id="r-match">—</div><div class="metrica-label">CONCILIADOS</div></div>
+          <div class="metrica"><div class="metrica-val danger" id="r-unmatch">—</div><div class="metrica-label">PENDIENTES</div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">RESULTADOS DE CONCILIACIÓN</div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-outline" id="btn-recon-ia" style="font-size:0.68rem;padding:4px 11px; border-color:#9333ea; color:#9333ea; display:flex; align-items:center; gap:4px;">
+                <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                IA CONCILIAR
+              </button>
+              <button class="btn btn-green" id="btn-export-recon" style="font-size:0.68rem;padding:4px 11px;">EXPORTAR EXCEL</button>
+            </div>
+          </div>
+          <div style="display:flex; border-bottom:1px solid var(--border); padding:0;">
+            <button class="recon-tab-btn active" data-tab="matches" style="background:transparent; border:none; color:var(--cyan); border-bottom:2px solid var(--cyan); padding:10px 15px; cursor:pointer; font-weight:600; font-size:0.7rem; transition:0.3s;">
+              CRUZADOS (<span id="count-tab-matches">0</span>)
+            </button>
+            <button class="recon-tab-btn" data-tab="unmatchedBank" style="background:transparent; border:none; color:var(--text-mid); border-bottom:2px solid transparent; padding:10px 15px; cursor:pointer; font-weight:600; font-size:0.7rem; transition:0.3s;">
+              PENDIENTES BANCO (<span id="count-tab-bank">0</span>)
+            </button>
+            <button class="recon-tab-btn" data-tab="unmatchedERP" style="background:transparent; border:none; color:var(--text-mid); border-bottom:2px solid transparent; padding:10px 15px; cursor:pointer; font-weight:600; font-size:0.7rem; transition:0.3s;">
+              PENDIENTES ERP (<span id="count-tab-erp">0</span>)
+            </button>
+          </div>
+          <div class="panel-body" style="padding:0;">
+            <table style="width:100%; border-collapse:collapse; font-family:var(--mono); font-size:0.65rem;">
+              <thead id="recon-table-head">
+                <!-- Se inyecta dinámicamente -->
+              </thead>
+              <tbody id="recon-table-body">
+              </tbody>
+            </table>
+            
+            <!-- Paginación -->
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 15px; border-top:1px solid var(--border); background:rgba(255,255,255,0.01);">
+              <div id="recon-page-info" style="color:var(--text-dim); font-size:0.65rem; font-family:var(--mono);">Mostrando 0 a 0 de 0</div>
+              <div style="display:flex; gap:8px;">
+                <button class="btn btn-outline" id="btn-recon-prev" style="padding:4px 12px; font-size:0.65rem;" disabled>Anterior</button>
+                <button class="btn btn-outline" id="btn-recon-next" style="padding:4px 12px; font-size:0.65rem;" disabled>Siguiente</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- VIEW: DASHBOARD (New) -->
     <div id="view-dashboard" style="display:block;">
@@ -547,5 +660,6 @@
 
 <script src="js/app.js"></script>
 <script src="js/odoo_conector.js"></script>
+<script src="js/reconciliation_engine.js"></script>
 </body>
 </html>

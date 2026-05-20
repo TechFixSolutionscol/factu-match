@@ -136,7 +136,7 @@ checkSession();
 
 /* --- GESTIÓN DE VISTAS --- */
 function switchView(view) {
-  const views = ['dashboard', 'comparisons', 'logs', 'users', 'profile', 'config'];
+  const views = ['dashboard', 'comparisons', 'logs', 'users', 'profile', 'config', 'reconciliation'];
   views.forEach(v => {
     const el = document.getElementById(`view-${v}`);
     if (el) el.style.display = v === view ? 'block' : 'none';
@@ -147,6 +147,7 @@ function switchView(view) {
   const titles = {
     dashboard: 'TABLERO DE CONTROL',
     comparisons: 'PROCESAMIENTO DE ARCHIVOS',
+    reconciliation: 'CONCILIACIÓN BANCARIA',
     logs: 'REGISTROS DEL SISTEMA',
     users: 'GESTIÓN DE USUARIOS',
     profile: 'MI PERFIL DE USUARIO',
@@ -161,6 +162,7 @@ function switchView(view) {
 
 document.getElementById("nav-dashboard").addEventListener("click", () => switchView('dashboard'));
 document.getElementById("nav-comparisons").addEventListener("click", () => switchView('comparisons'));
+document.getElementById("nav-reconciliation").addEventListener("click", () => switchView('reconciliation'));
 document.getElementById("nav-logs").addEventListener("click", () => switchView('logs'));
 document.getElementById("nav-users").addEventListener("click", () => switchView('users'));
 document.getElementById("nav-profile-btn").addEventListener("click", () => switchView('profile'));

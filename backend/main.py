@@ -5,6 +5,8 @@ import os
 import io
 import json
 import httpx
+from pydantic import BaseModel
+from typing import List, Optional
 from comparador import comparar_facturas, comparar_facturas_odoo, generar_excel_reporte
 from odoo_match import OdooConnector, CredentialManager
 
@@ -192,6 +194,90 @@ async def odoo_descargar_reporte(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generando reporte Odoo: {str(e)}")
 
+
+# ──────────────────────────────────────────────
+# ENDPOINTS INTELIGENCIA ARTIFICIAL
+# ──────────────────────────────────────────────
+
+class ItemBanco(BaseModel):
+    id: str
+    date: str
+    description: str
+    document: str
+    amount: float
+
+class ItemERP(BaseModel):
+    id: str
+    date: str
+    reference: str
+    amount: float
+
+class ReconciliacionIARequest(BaseModel):
+    banco: List[ItemBanco]
+    erp: List[ItemERP]
+
+@app.post("/conciliar-ia")
+async def conciliar_con_ia(req: ReconciliacionIARequest):
+    """Realiza un cruce semántico de los registros no conciliados usando Groq."""
+    try:
+        # Por seguridad y límites de tokens, procesamos en bloques de 150 máx
+        banco_list = req.banco[:150]
+        erp_list = req.erp[:150]
+        
+        matches = await buscar_matches_semanticos_groq(banco_list, erp_list)
+        return {"success": True, "matches": matches}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en IA: {str(e)}")
+
+async def buscar_matches_semanticos_groq(banco: List[ItemBanco], erp: List[ItemERP]) -> list:
+    if not GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEY no configurada. Verifica el panel.")
+        
+    banco_str = json.dumps([b.dict() for b in banco], ensure_ascii=False)
+    erp_str = json.dumps([e.dict() for e in erp], ensure_ascii=False)
+    
+    prompt = f"""Eres un experto contador y conciliador. Analiza estas transacciones bancarias huérfanas y facturas de ERP pendientes.
+Trata de encontrar correspondencias basándote en similitud de descripciones, nombres de empresas mal escritos, variaciones y referencias implícitas.
+
+Bancos pendientes (JSON):
+{banco_str}
+
+Facturas ERP pendientes (JSON):
+{erp_str}
+
+Reglas:
+1. Retorna un array JSON estricto con este formato exacto: [{{"id_banco": "B-X", "id_erp": "E-Y", "razon": "explicación de 5 palabras"}}]
+2. Relaciona 1 a 1 solamente, donde estés muy seguro (>80% certeza) analizando similitud semántica.
+3. No escribas texto markdown, no incluyas ```json, devuelve únicamente el array JSON válido.
+4. Si no encuentras ningún cruce seguro, devuelve [] vacío. No inventes cruces."""
+
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 2048,
+                    "temperature": 0.1
+                }
+            )
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            # Limpiar posible markdown devuelto por Llama 3
+            content = content.replace("```json", "").replace("```", "").strip()
+            
+            cruces = json.loads(content)
+            if isinstance(cruces, list):
+                return cruces
+            return []
+    except Exception as e:
+        print(f"Excepción llamando a Groq para conciliación: {e}")
+        return []
 
 async def generar_narrativa_groq(resultado: dict) -> str:
     if not GROQ_API_KEY:
