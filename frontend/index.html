@@ -676,7 +676,24 @@
                 <option value="Lectura">Solo Lectura</option>
               </select>
             </div>
-            <div id="new-user-msg" style="font-size:0.6rem; font-family:var(--mono); margin-bottom:1rem;"></div>
+            <div class="login-input-group" style="margin-top:1.5rem;">
+              <label>MÓDULOS PERMITIDOS</label>
+              <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.6rem; text-transform:none; letter-spacing:0; color:var(--text); cursor:pointer;">
+                  <input type="checkbox" class="new-module-chk" value="auditor" checked> Auditoría Tributaria
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.6rem; text-transform:none; letter-spacing:0; color:var(--text); cursor:pointer;">
+                  <input type="checkbox" class="new-module-chk" value="comparisons" checked> Procesamiento de Archivos
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.6rem; text-transform:none; letter-spacing:0; color:var(--text); cursor:pointer;">
+                  <input type="checkbox" class="new-module-chk" value="checklist" checked> Checklist (Auditor IA)
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.6rem; text-transform:none; letter-spacing:0; color:var(--text); cursor:pointer;">
+                  <input type="checkbox" class="new-module-chk" value="reconciliation" checked> Conciliación Bancaria
+                </label>
+              </div>
+            </div>
+            <div id="new-user-msg" style="font-size:0.6rem; font-family:var(--mono); margin-bottom:1rem; margin-top:1rem;"></div>
             <button class="btn btn-cyan" id="btn-create-user" style="width:100%; justify-content:center;">ENVIAR INVITACIÓN</button>
           </div>
         </div>
@@ -693,6 +710,7 @@
                   <tr style="border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02);">
                     <th style="padding:10px; text-align:left; color:var(--text-dim);">USUARIO / CORREO</th>
                     <th style="padding:10px; text-align:center; color:var(--text-dim);">ROL</th>
+                    <th style="padding:10px; text-align:center; color:var(--text-dim);">MÓDULOS</th>
                     <th style="padding:10px; text-align:center; color:var(--text-dim);">ESTADO</th>
                     <th style="padding:10px; text-align:center; color:var(--text-dim);">ÚLTIMO ACCESO</th>
                     <th style="padding:10px; text-align:right; color:var(--text-dim);">ACCIONES</th>

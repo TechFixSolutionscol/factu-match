@@ -113,9 +113,47 @@ function initUserSession() {
   badge.textContent = (currentUser.role || "OPERADOR").toUpperCase();
   badge.className = "status-badge active";
   
-  // Control de permisos visuales
-  const isAdmin = currentUser.role === "Admin";
-  document.getElementById("nav-users").style.display = isAdmin ? "flex" : "none";
+  // Control de permisos visuales (Advanced Permissions)
+  const role = currentUser.role || "Lectura";
+  const isAdmin = role === "Admin";
+  const isOperador = role === "Operador" || isAdmin;
+  const userModules = (currentUser.modules || "auditor,comparisons,checklist,reconciliation").split(',');
+  
+  // Ocultar módulos administrativos
+  const navUsers = document.getElementById("nav-users");
+  const navConfig = document.getElementById("nav-config");
+  const navLogs = document.getElementById("nav-logs");
+  
+  if (navUsers) navUsers.style.display = isAdmin ? "flex" : "none";
+  if (navConfig) navConfig.style.display = isAdmin ? "flex" : "none";
+  if (navLogs) navLogs.style.display = isAdmin ? "flex" : "none";
+
+  // Ocultar módulos operativos no adquiridos
+  const navAuditor = document.getElementById("nav-auditor");
+  const navComparisons = document.getElementById("nav-comparisons");
+  const navChecklist = document.getElementById("nav-checklist");
+  const navReconciliation = document.getElementById("nav-reconciliation");
+
+  if (navAuditor) navAuditor.style.display = userModules.includes('auditor') ? "flex" : "none";
+  if (navComparisons) navComparisons.style.display = userModules.includes('comparisons') ? "flex" : "none";
+  if (navChecklist) navChecklist.style.display = userModules.includes('checklist') ? "flex" : "none";
+  if (navReconciliation) navReconciliation.style.display = userModules.includes('reconciliation') ? "flex" : "none";
+
+  // Modo Solo Lectura (Deshabilitar acciones operativas)
+  if (!isOperador) {
+    const actionIds = [
+      'dian-file', 'siesa-file', 'btn-comparar', 'btn-descargar',
+      'btn-odoo-comparar', 'btn-odoo-download', 'btn-run-ai-checklist'
+    ];
+    actionIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.disabled = true;
+        el.style.opacity = '0.5';
+        el.style.cursor = 'not-allowed';
+      }
+    });
+  }
   
   // Prellenar perfil
   document.getElementById("profile-name").value = currentUser.name;
@@ -136,6 +174,22 @@ checkSession();
 
 /* --- GESTIÓN DE VISTAS --- */
 function switchView(viewId) {
+  // Verificación de seguridad de ruta
+  const role = currentUser?.role || "Lectura";
+  const isAdmin = role === "Admin";
+  if (!isAdmin && ['users', 'config', 'logs'].includes(viewId)) {
+    log('ACCESO DENEGADO: Requiere privilegios de Administrador.', 'err');
+    return;
+  }
+
+  // Verificación de acceso a Módulos pagados
+  const userModules = (currentUser?.modules || "auditor,comparisons,checklist,reconciliation").split(',');
+  const protectedModules = ['auditor', 'comparisons', 'checklist', 'reconciliation'];
+  if (protectedModules.includes(viewId) && !userModules.includes(viewId)) {
+    log(`MÓDULO BLOQUEADO: No tienes el módulo de ${viewId} habilitado en tu licencia.`, 'warn');
+    return;
+  }
+
   // Ocultar todas las vistas
   const views = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'logs', 'users', 'config', 'profile'];
   views.forEach(v => {
@@ -214,6 +268,12 @@ async function loadUsersTable() {
           </select>
         </td>
         <td style="text-align:center;">
+          <div style="font-size:0.5rem; color:var(--cyan); max-width:120px; word-wrap:break-word; margin:auto;">
+            ${(u.modules || 'auditor,comparisons,checklist,reconciliation').split(',').map(m => m.toUpperCase().substring(0,4)).join(', ')}
+          </div>
+          <button class="action-btn" style="font-size:0.5rem; margin:5px auto 0 auto; color:var(--text-mid); border:1px solid var(--border); padding:2px 5px; border-radius:3px;" onclick="editUserModules('${u.id}', '${u.name}', '${u.modules || 'auditor,comparisons,checklist,reconciliation'}')">⚙️ EDITAR</button>
+        </td>
+        <td style="text-align:center;">
           <span class="status-badge ${statusCls}">${u.status}</span>
         </td>
         <td style="text-align:center; color:var(--text-dim); font-size:0.55rem;">${lastLogin}</td>
@@ -237,6 +297,56 @@ window.updateUserRole = async (id, role) => {
   log(`Actualizando rol de usuario: ${id} -> ${role}`, 'msg');
   const res = await callGASRobust("updateUser", { id, role });
   if (res.success) log("Rol actualizado.", 'ok');
+};
+
+window.editUserModules = (id, name, currentModulesStr) => {
+  const current = (currentModulesStr || 'auditor,comparisons,checklist,reconciliation').split(',');
+  
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.style.display = 'flex';
+  
+  overlay.innerHTML = `
+    <div class="login-card" style="max-width:400px; padding:1.5rem;">
+      <div class="login-header"><div class="brand-label">CONFIGURAR MÓDULOS</div></div>
+      <div class="page-sub" style="margin-bottom:1rem;">Licencia para: <strong style="color:var(--cyan);">${name}</strong></div>
+      <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:1.5rem; background:var(--bg-mid); padding:1rem; border-radius:8px;">
+        <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-auditor" ${current.includes('auditor') ? 'checked' : ''}> Auditoría Tributaria</label>
+        <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-comparisons" ${current.includes('comparisons') ? 'checked' : ''}> Procesamiento de Archivos</label>
+        <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-checklist" ${current.includes('checklist') ? 'checked' : ''}> Checklist (Auditor IA)</label>
+        <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-reconciliation" ${current.includes('reconciliation') ? 'checked' : ''}> Conciliación Bancaria</label>
+      </div>
+      <button class="btn btn-cyan" id="btn-save-modules" style="width:100%; justify-content:center;">GUARDAR PERMISOS</button>
+      <button class="btn btn-outline" id="btn-cancel-modules" style="width:100%; justify-content:center; margin-top:10px;">CANCELAR</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  
+  document.getElementById('btn-cancel-modules').onclick = () => overlay.remove();
+  document.getElementById('btn-save-modules').onclick = async () => {
+    const selected = [];
+    if(document.getElementById('chk-auditor').checked) selected.push('auditor');
+    if(document.getElementById('chk-comparisons').checked) selected.push('comparisons');
+    if(document.getElementById('chk-checklist').checked) selected.push('checklist');
+    if(document.getElementById('chk-reconciliation').checked) selected.push('reconciliation');
+    
+    const modulesStr = selected.join(',');
+    
+    // Bloquear UI
+    document.getElementById('btn-save-modules').innerHTML = '<div class="btn-loader" style="margin:auto;"></div>';
+    document.getElementById('btn-save-modules').disabled = true;
+    
+    log("Actualizando licenciamiento del usuario...", "msg");
+    const res = await callGASRobust("updateUser", { id, modules: modulesStr });
+    
+    if(res.success) {
+      log("Módulos actualizados correctamente.", "ok");
+      loadUsersTable();
+    } else {
+      log("Error actualizando módulos: " + res.error, "err");
+    }
+    overlay.remove();
+  };
 };
 
 window.toggleUserStatus = async (id, currentStatus) => {
@@ -264,6 +374,10 @@ document.getElementById("btn-create-user").addEventListener("click", async () =>
   const name = document.getElementById("new-user-name").value;
   const email = document.getElementById("new-user-email").value;
   const role = document.getElementById("new-user-role").value;
+  
+  // Extraer módulos seleccionados
+  const selectedModules = Array.from(document.querySelectorAll('.new-module-chk:checked')).map(cb => cb.value).join(',');
+  
   const msgDiv = document.getElementById("new-user-msg");
 
   if (!name || !email) {
@@ -276,7 +390,7 @@ document.getElementById("btn-create-user").addEventListener("click", async () =>
   btn.disabled = true;
   btn.innerHTML = '<div class="btn-loader"></div> ENVIANDO...';
   
-  const res = await callGASRobust("createUser", { name, email, role });
+  const res = await callGASRobust("createUser", { name, email, role, modules: selectedModules });
   btn.disabled = false;
   btn.innerHTML = "ENVIAR INVITACIÓN";
 

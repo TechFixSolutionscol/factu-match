@@ -48,8 +48,8 @@ function initDB() {
   // ESTRUCTURA DE USUARIOS: 
   // 0:ID, 1:Nombre, 2:Email, 3:Password_Hash, 4:Estado, 5:Token, 6:Expiration, 
   // 7:Rol, 8:Ultimo_Acceso, 9:Fecha_Creacion, 10:Intentos_Fallidos, 11:Bloqueado_Hasta,
-  // 12:Recovery_Token, 13:Recovery_Expiration
-  const headers = ["ID", "Nombre", "Email", "Password_Hash", "Estado", "Token", "Expiration", "Rol", "Ultimo_Acceso", "Fecha_Creacion", "Intentos_Fallidos", "Bloqueado_Hasta", "Recovery_Token", "Recovery_Expiration"];
+  // 12:Recovery_Token, 13:Recovery_Expiration, 14:Modules
+  const headers = ["ID", "Nombre", "Email", "Password_Hash", "Estado", "Token", "Expiration", "Rol", "Ultimo_Acceso", "Fecha_Creacion", "Intentos_Fallidos", "Bloqueado_Hasta", "Recovery_Token", "Recovery_Expiration", "Modules"];
 
   let sheet = ss.getSheetByName("Usuarios");
   if (!sheet) {
@@ -70,7 +70,8 @@ function initDB() {
       0,
       "",
       "",
-      ""
+      "",
+      "auditor,comparisons,checklist,reconciliation"
     ]);
   } else {
     // Si ya existe, nos aseguramos de que tenga todas las columnas
@@ -132,7 +133,8 @@ function handleLogin(data) {
           name: values[i][1],
           email: dbEmail,
           status: dbStatus,
-          role: dbRole
+          role: dbRole,
+          modules: values[i][14] || "auditor,comparisons,checklist,reconciliation"
         };
       } else {
         // Login Fallido: Incrementar contador
@@ -167,7 +169,7 @@ function createUser(data) {
   const token = Utilities.getUuid();
   const expiration = new Date().getTime() + (48 * 60 * 60 * 1000); // 48 horas según requerimiento
 
-  // Columnas: ID, Nombre, Email, PassHash, Estado, Token, Exp, Rol, LastAcc, CreatedAt, Fails, Lock, RecToken, RecExp
+  // Columnas: ID, Nombre, Email, PassHash, Estado, Token, Exp, Rol, LastAcc, CreatedAt, Fails, Lock, RecToken, RecExp, Modules
   sheet.appendRow([
     userId, 
     data.name, 
@@ -182,7 +184,8 @@ function createUser(data) {
     0, 
     "", 
     "", 
-    ""
+    "",
+    data.modules || "auditor,comparisons,checklist,reconciliation"
   ]);
   
   sendInvitationEmail(data.name, data.email, token);
@@ -334,7 +337,8 @@ function getUsers() {
     status: row[4],
     role: row[7],
     lastLogin: row[8],
-    createdAt: row[9]
+    createdAt: row[9],
+    modules: row[14] || "auditor,comparisons,checklist,reconciliation"
   }));
 }
 
@@ -347,6 +351,7 @@ function updateUser(data) {
     if (values[i][0] === data.id) {
       if (data.status) sheet.getRange(i + 1, 5).setValue(data.status);
       if (data.role) sheet.getRange(i + 1, 8).setValue(data.role);
+      if (data.modules !== undefined) sheet.getRange(i + 1, 15).setValue(data.modules);
       return { success: true };
     }
   }
