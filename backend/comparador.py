@@ -158,8 +158,9 @@ def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame) -> dict
     Motor central de comparación reutilizable.
     Acepta DataFrames ya normalizados de cualquier fuente (Siesa Excel u Odoo API).
     """
+    # Match por (NIT, clave) únicamente. NO usar solo `clave` como fallback:
+    # genera falsos positivos cuando dos proveedores comparten prefijo+folio.
     siesa_index = set(zip(df_siesa["nit"], df_siesa["clave"]))
-    siesa_claves = set(df_siesa["clave"])
 
     proveedores = {}
     for _, row in df_dian.iterrows():
@@ -179,7 +180,7 @@ def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame) -> dict
 
         proveedores[nit]["facturas_dian"].append(folio_original)
 
-        en_siesa = (nit, clave) in siesa_index or clave in siesa_claves
+        en_siesa = (nit, clave) in siesa_index
 
         if en_siesa:
             proveedores[nit]["encontradas"].append(folio_original)
