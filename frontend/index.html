@@ -547,22 +547,107 @@
       </div>
     </div>
 
-    <!-- VIEW: CONFIGURACION (New) -->
-    <div id="view-config" style="display:none; max-width:600px;">
+    <div id="view-config" style="display:none;">
       <div class="page-title">CONFIGURACIÓN DEL SISTEMA</div>
-      <div class="page-sub">Credenciales de integración para Odoo y Motores de IA. Se almacenan de forma segura localmente.</div>
+      <div class="page-sub">Credenciales de integración para Odoo ERP. Se almacenan de forma segura localmente.</div>
       
-      <div class="login-box" style="margin-top:2rem; width:100%;">
-        <div class="login-title">Conexión Odoo</div>
-        <input type="url" id="config-odoo-url" class="login-input" placeholder="URL de Odoo (ej. https://miempresa.odoo.com)">
-        <input type="text" id="config-odoo-db" class="login-input" placeholder="Nombre de la Base de Datos">
-        <input type="text" id="config-odoo-user" class="login-input" placeholder="Usuario / Email">
-        <input type="password" id="config-odoo-pass" class="login-input" placeholder="API Key de Odoo">
-        
-        <div class="login-title" style="margin-top:2rem;">Motor de Inteligencia Artificial</div>
-        <input type="password" id="config-groq-key" class="login-input" placeholder="GROQ API Key (gsk_...)">
-        
-        <button class="btn btn-primary" id="btn-save-config" style="width:100%; margin-top:1rem;">GUARDAR CONFIGURACIÓN</button>
+      <div class="grid-main" style="grid-template-columns: 1fr 1fr;">
+        <!-- Panel Izquierdo: Formulario de Conexión y Estado -->
+        <div style="display: flex; flex-direction: column; gap: 1rem;">
+          <div class="panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                CONEXIÓN ODOO ERP
+              </div>
+              <span id="odoo-status-badge" class="status-badge" style="color:var(--text-dim);border-color:var(--border);">SIN CONFIGURAR</span>
+            </div>
+            <div class="panel-body">
+              <div class="login-input-group">
+                <label>URL DE LA INSTANCIA</label>
+                <input type="text" id="odoo-url" class="login-input" placeholder="https://miempresa.odoo.com" />
+              </div>
+              <div class="login-input-group">
+                <label>BASE DE DATOS</label>
+                <input type="text" id="odoo-db" class="login-input" placeholder="nombre_base_de_datos" />
+              </div>
+              <div class="login-input-group">
+                <label>USUARIO (EMAIL)</label>
+                <input type="text" id="odoo-user" class="login-input" placeholder="admin@empresa.com" />
+              </div>
+              <div class="login-input-group">
+                <label>API KEY</label>
+                <div class="password-wrapper">
+                  <input type="password" id="odoo-key" class="login-input" placeholder="Clave API generada en Odoo" />
+                  <div class="password-toggle" onclick="togglePassword('odoo-key')">
+                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                  </div>
+                </div>
+              </div>
+              <div id="odoo-msg" style="font-size:0.62rem; font-family:var(--mono); min-height:20px; margin-bottom:0.75rem;"></div>
+              <div class="btn-row">
+                <button class="btn btn-outline" id="btn-odoo-test" style="flex:1; justify-content:center;">
+                  <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  PROBAR CONEXIÓN
+                </button>
+                <button class="btn btn-cyan" id="btn-odoo-save" style="flex:1; justify-content:center;" disabled>
+                  <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16v2a2 2 0 01-2 2H5a2 2 0 01-2-2v-2m3-5l4 4 4-4m-4 4V4"/></svg>
+                  GUARDAR CREDENCIALES
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Panel: Estado de conexión activa (Se muestra si está conectado) -->
+          <div id="odoo-compare-panel" style="display:none;" class="panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <span class="status-dot" id="odoo-conn-dot"></span>
+                CONEXIÓN ACTIVA
+              </div>
+              <button class="btn btn-outline" id="btn-odoo-disconnect" style="font-size:0.6rem; padding:3px 10px; color:var(--red); border-color:var(--red);">DESCONECTAR</button>
+            </div>
+            <div class="panel-body" style="font-family:var(--mono); font-size:0.7rem; color:var(--text-mid);">
+              <span id="odoo-conn-label"></span><br/>
+              <span id="odoo-connected-info">Credenciales guardadas correctamente. Ya puede usar el modo API ODOO en la sección de Comparaciones.</span>
+              <button class="btn btn-cyan" onclick="switchView('comparisons')" style="margin-top:1rem; font-size:0.65rem;">
+                IR A COMPARACIONES →
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel Derecho: Guía -->
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">GUÍA RÁPIDA — CÓMO OBTENER LA API KEY</div></div>
+          <div class="panel-body" style="font-family:var(--mono); font-size:0.65rem; line-height:1.9; color:var(--text-mid);">
+            <div style="display:flex;flex-direction:column;gap:0.75rem;">
+              <div class="guide-step">
+                <span class="guide-num">01</span>
+                <span>Ingresa a tu instancia Odoo con tu usuario administrador.</span>
+              </div>
+              <div class="guide-step">
+                <span class="guide-num">02</span>
+                <span>Haz clic en tu <strong style="color:var(--cyan);">avatar</strong> (esquina superior derecha) → <strong style="color:var(--cyan);">Preferencias</strong>.</span>
+              </div>
+              <div class="guide-step">
+                <span class="guide-num">03</span>
+                <span>Busca la pestaña <strong style="color:var(--cyan);">Seguridad de la cuenta</strong> o <strong style="color:var(--cyan);">Account Security</strong>.</span>
+              </div>
+              <div class="guide-step">
+                <span class="guide-num">04</span>
+                <span>Clic en <strong style="color:var(--cyan);">Claves API</strong> → <strong style="color:var(--cyan);">Nueva clave</strong>.</span>
+              </div>
+              <div class="guide-step">
+                <span class="guide-num">05</span>
+                <span>Nombórala <em style="color:var(--green);">FactuMatch</em>, copia el token generado y pégalo.</span>
+              </div>
+              <div style="margin-top:0.5rem; padding:0.6rem; background:rgba(0,229,255,0.05); border:1px solid var(--border); border-radius:4px; font-size:0.6rem; color:var(--text-dim);">
+                ⚠ La API Key solo se muestra una vez. Guárdala en un lugar seguro.
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -668,106 +753,7 @@
       </div>
     </div>
 
-  <!-- VIEW: CONFIG ODOO -->
-  <div id="view-config" style="display:none;">
-    <div class="page-title">CONFIGURACIÓN DEL SISTEMA</div>
-    <div class="page-sub">Conecte su instancia de Odoo ERP para comparar facturas en tiempo real.</div>
 
-    <div class="grid-main" style="grid-template-columns: 1fr 380px;">
-      <!-- Panel: Formulario credenciales -->
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
-            CONEXIÓN ODOO ERP
-          </div>
-          <span id="odoo-status-badge" class="status-badge" style="color:var(--text-dim);border-color:var(--border);">SIN CONFIGURAR</span>
-        </div>
-        <div class="panel-body">
-          <div class="login-input-group">
-            <label>URL DE LA INSTANCIA</label>
-            <input type="text" id="odoo-url" class="login-input" placeholder="https://miempresa.odoo.com" />
-          </div>
-          <div class="login-input-group">
-            <label>BASE DE DATOS</label>
-            <input type="text" id="odoo-db" class="login-input" placeholder="nombre_base_de_datos" />
-          </div>
-          <div class="login-input-group">
-            <label>USUARIO (EMAIL)</label>
-            <input type="text" id="odoo-user" class="login-input" placeholder="admin@empresa.com" />
-          </div>
-          <div class="login-input-group">
-            <label>API KEY</label>
-            <div class="password-wrapper">
-              <input type="password" id="odoo-key" class="login-input" placeholder="Clave API generada en Odoo" />
-              <div class="password-toggle" onclick="togglePassword('odoo-key')">
-                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-              </div>
-            </div>
-          </div>
-          <div id="odoo-msg" style="font-size:0.62rem; font-family:var(--mono); min-height:20px; margin-bottom:0.75rem;"></div>
-          <div class="btn-row">
-            <button class="btn btn-outline" id="btn-odoo-test" style="flex:1; justify-content:center;">
-              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-              PROBAR CONEXIÓN
-            </button>
-            <button class="btn btn-cyan" id="btn-odoo-save" style="flex:1; justify-content:center;" disabled>
-              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16v2a2 2 0 01-2 2H5a2 2 0 01-2-2v-2m3-5l4 4 4-4m-4 4V4"/></svg>
-              GUARDAR CREDENCIALES
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Panel: Guía paso a paso -->
-      <div class="panel">
-        <div class="panel-header"><div class="panel-title">GUÍA RÁPIDA — CÓMO OBTENER LA API KEY</div></div>
-        <div class="panel-body" style="font-family:var(--mono); font-size:0.65rem; line-height:1.9; color:var(--text-mid);">
-          <div style="display:flex;flex-direction:column;gap:0.75rem;">
-            <div class="guide-step">
-              <span class="guide-num">01</span>
-              <span>Ingresa a tu instancia Odoo con tu usuario administrador.</span>
-            </div>
-            <div class="guide-step">
-              <span class="guide-num">02</span>
-              <span>Haz clic en tu <strong style="color:var(--cyan);">avatar</strong> (esquina superior derecha) → <strong style="color:var(--cyan);">Preferencias</strong>.</span>
-            </div>
-            <div class="guide-step">
-              <span class="guide-num">03</span>
-              <span>Busca la pestaña <strong style="color:var(--cyan);">Seguridad de la cuenta</strong> o <strong style="color:var(--cyan);">Account Security</strong>.</span>
-            </div>
-            <div class="guide-step">
-              <span class="guide-num">04</span>
-              <span>Clic en <strong style="color:var(--cyan);">Claves API</strong> → <strong style="color:var(--cyan);">Nueva clave</strong>.</span>
-            </div>
-            <div class="guide-step">
-              <span class="guide-num">05</span>
-              <span>Nombórala <em style="color:var(--green);">FactuMatch</em>, copia el token generado y pégalo arriba.</span>
-            </div>
-            <div style="margin-top:0.5rem; padding:0.6rem; background:rgba(0,229,255,0.05); border:1px solid var(--border); border-radius:4px; font-size:0.6rem; color:var(--text-dim);">
-              ⚠ La API Key solo se muestra una vez. Guárdala en un lugar seguro.
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Panel: Estado de conexión activa -->
-    <div id="odoo-compare-panel" style="display:none; margin-top:1rem;" class="panel">
-      <div class="panel-header">
-        <div class="panel-title">
-          <span class="status-dot"></span>
-          CONEXIÓN ACTIVA
-        </div>
-        <button class="btn btn-outline" id="btn-odoo-disconnect" style="font-size:0.6rem; padding:3px 10px; color:var(--red); border-color:var(--red);">DESCONECTAR</button>
-      </div>
-      <div class="panel-body" style="font-family:var(--mono); font-size:0.7rem; color:var(--text-mid);">
-        <span id="odoo-connected-info">Credenciales guardadas correctamente. Ya puede usar el modo API ODOO en la sección de Comparaciones.</span>
-        <button class="btn btn-cyan" onclick="switchView('comparisons')" style="margin-top:1rem; font-size:0.65rem;">
-          IR A COMPARACIONES →
-        </button>
-      </div>
-    </div>
   </div>
 
 </div>

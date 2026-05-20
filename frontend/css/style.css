@@ -63,7 +63,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); disp
 .panel-title svg { width: 13px; height: 13px; color: var(--text-dim); }
 .panel-body { padding: 1rem; }
 
-.status-badge { font-size: 0.58rem; font-family: var(--mono); letter-spacing: 0.1em; padding: 3px 9px; border-radius: 2px; border: 1px solid; }
+.status-badge { font-size: 0.58rem; font-family: var(--mono); letter-spacing: 0.1em; padding: 3px 9px; border-radius: 2px; border: 1px solid var(--border); color: var(--text-dim); }
+.status-processing { color: var(--yellow); border-color: var(--yellow); background: rgba(255,215,64,0.10); }
+.status-badge.active { color: var(--green); border-color: var(--green); background: var(--green-dim); }
 .status-waiting { color: var(--cyan); border-color: var(--cyan); background: var(--cyan-dim); }
 .status-ok { color: var(--green); border-color: var(--green); background: var(--green-dim); }
 .status-error { color: var(--red); border-color: var(--red); background: var(--red-dim); }
