@@ -554,7 +554,7 @@
       <div class="grid-main" style="grid-template-columns: 1fr 1fr;">
         <!-- Panel Izquierdo: Formulario de Conexión y Estado -->
         <div style="display: flex; flex-direction: column; gap: 1rem;">
-          <div class="panel">
+          <div id="odoo-config-panel" class="panel">
             <div class="panel-header">
               <div class="panel-title">
                 <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
@@ -605,7 +605,10 @@
                 <span class="status-dot" id="odoo-conn-dot"></span>
                 CONEXIÓN ACTIVA
               </div>
-              <button class="btn btn-outline" id="btn-odoo-disconnect" style="font-size:0.6rem; padding:3px 10px; color:var(--red); border-color:var(--red);">DESCONECTAR</button>
+              <div style="display: flex; gap: 5px;">
+                <button class="btn btn-outline" id="btn-odoo-edit" style="font-size:0.6rem; padding:3px 10px; color:var(--cyan); border-color:var(--cyan);">CAMBIAR BD</button>
+                <button class="btn btn-outline" id="btn-odoo-disconnect" style="font-size:0.6rem; padding:3px 10px; color:var(--red); border-color:var(--red);">DESCONECTAR</button>
+              </div>
             </div>
             <div class="panel-body" style="font-family:var(--mono); font-size:0.7rem; color:var(--text-mid);">
               <span id="odoo-conn-label"></span><br/>

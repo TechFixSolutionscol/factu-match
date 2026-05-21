@@ -16,25 +16,41 @@ function setOdooStatus(connected, version) {
   const dot      = document.getElementById('odoo-conn-dot');
   const label    = document.getElementById('odoo-conn-label');
   const comparePanel = document.getElementById('odoo-compare-panel');
+  const configPanel = document.getElementById('odoo-config-panel');
   const saveBtn  = document.getElementById('btn-odoo-save');
   const odooBtn  = document.getElementById('btn-odoo-comparar');
   const dlBtn    = document.getElementById('btn-odoo-download');
+  const inputFields = ['odoo-url', 'odoo-db', 'odoo-user', 'odoo-key'];
 
   if (connected) {
     if (badge)  { badge.textContent = 'CONECTADO'; badge.className = 'status-badge active'; }
     if (dot)    { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 6px var(--green)'; }
     if (label)  { label.textContent = `ODOO ${version || ''} — CREDENCIALES CONFIGURADAS`; label.style.color = 'var(--green)'; }
     if (comparePanel) comparePanel.style.display = 'block';
+    if (configPanel) configPanel.style.display = 'none';  // Ocultar panel de configuración
     if (saveBtn) saveBtn.disabled = false;
     if (odooBtn) odooBtn.disabled = false;
     if (dlBtn)   dlBtn.disabled = false;
+    
+    // Deshabilitar campos cuando está conectado
+    inputFields.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = true;
+    });
   } else {
     if (badge)  { badge.textContent = 'SIN CONFIGURAR'; badge.className = 'status-badge'; badge.style.color = 'var(--text-dim)'; badge.style.borderColor = 'var(--border)'; }
     if (dot)    { dot.style.background = 'var(--text-dim)'; dot.style.boxShadow = 'none'; }
     if (label)  { label.textContent = 'SIN CONFIGURAR — IR A CONFIGURACIÓN'; label.style.color = 'var(--text-dim)'; }
     if (comparePanel) comparePanel.style.display = 'none';
+    if (configPanel) configPanel.style.display = 'block';  // Mostrar panel de configuración
     if (odooBtn) odooBtn.disabled = true;
     if (dlBtn)   dlBtn.disabled = true;
+    
+    // Habilitar campos cuando NO está conectado
+    inputFields.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = false;
+    });
   }
 }
 
@@ -197,6 +213,35 @@ document.getElementById('btn-odoo-save').addEventListener('click', async () => {
 });
 
 // ─────────────────────────────────────────────
+// CAMBIAR CONFIGURACIÓN ODOO (sin desconectar)
+// ─────────────────────────────────────────────
+
+document.getElementById('btn-odoo-edit').addEventListener('click', () => {
+  // Permitir edición: mostrar panel de configuración y habilitar campos
+  // Sin borrar las credenciales guardadas
+  const configPanel = document.getElementById('odoo-config-panel');
+  const comparePanel = document.getElementById('odoo-compare-panel');
+  
+  if (configPanel) configPanel.style.display = 'block';
+  if (comparePanel) comparePanel.style.display = 'none';
+  
+  // Habilitar campos de entrada
+  const inputFields = ['odoo-url', 'odoo-db', 'odoo-user', 'odoo-key'];
+  inputFields.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = false;
+  });
+  
+  // Mostrar la contraseña si estaba mascarada
+  const keyInput = document.getElementById('odoo-key');
+  if (keyInput && keyInput.value === '••••••••••••••••') {
+    keyInput.value = '';  // Limpiar para que el usuario ingrese una nueva
+  }
+  
+  log('Puedes ingresar nuevas credenciales de Odoo. Haz clic en "Probar Conexión" para verificar.', 'msg');
+});
+
+// ─────────────────────────────────────────────
 // DESCONECTAR ODOO
 // ─────────────────────────────────────────────
 
@@ -206,18 +251,27 @@ document.getElementById('btn-odoo-disconnect').addEventListener('click', async (
   localStorage.removeItem('odoo_credentials');
   odooCredentials = null;
   odooConnected   = false;
-  setOdooStatus(false);
+  setOdooStatus(false);  // Esto ahora también habilita los campos
 
   // Eliminar configuración centralizada de la nube (GAS)
   log('Eliminando configuración de Odoo de la nube...', 'warn');
   await callGASRobust("saveOdooConfig", { encrypted_credentials: "" });
 
-  // Limpiar campos
+  // Limpiar campos y asegurar que estén habilitados
   ['odoo-url', 'odoo-db', 'odoo-user', 'odoo-key'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) { el.value = ''; el.type = id === 'odoo-key' ? 'password' : 'text'; }
+    if (el) { 
+      el.value = ''; 
+      el.type = id === 'odoo-key' ? 'password' : 'text';
+      el.disabled = false;  // Explícitamente habilitar
+    }
   });
-  document.getElementById('odoo-msg').innerHTML = '<span class="t-warn">Configuración eliminada de la nube y del equipo.</span>';
+  
+  // Habilitar botón de prueba
+  const testBtn = document.getElementById('btn-odoo-test');
+  if (testBtn) testBtn.disabled = false;
+  
+  document.getElementById('odoo-msg').innerHTML = '<span class="t-warn">Configuración eliminada. Puedes ingresar nuevas credenciales.</span>';
   log('Configuración Odoo eliminada por completo.', 'warn');
 });
 
