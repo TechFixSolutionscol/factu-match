@@ -48,13 +48,20 @@ async function runChecklist() {
   const formData = new FormData();
   formData.append('month', month);
   formData.append('year', year);
+  // Enviar credenciales Odoo guardadas (Configuración → Odoo)
+  if (typeof odooCredentials !== 'undefined' && odooCredentials) {
+    formData.append('credentials', odooCredentials);
+  }
 
   try {
     const res = await fetch(`${API_URL}/api/run-ai-checklist`, {
       method: 'POST',
       body: formData
     });
-    if (!res.ok) throw new Error(`Error ${res.status}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Error ${res.status}`);
+    }
     const data = await res.json();
     if (data.success) {
       statusMsg.textContent = `Periodo evaluado: ${data.periodo}. Facturas analizadas: ${data.total_facturas_analizadas}.`;
@@ -65,7 +72,11 @@ async function runChecklist() {
     }
   } catch (e) {
     console.error(e);
-    statusMsg.textContent = 'Falló la comunicación con el servidor.';
+    if (e.message.includes('Credenciales') || e.message.includes('GROQ_API_KEY')) {
+      statusMsg.textContent = `⚠ ${e.message}`;
+    } else {
+      statusMsg.textContent = 'Falló la comunicación con el servidor.';
+    }
   } finally {
     btnRun.disabled = false;
     btnRun.innerHTML = `
