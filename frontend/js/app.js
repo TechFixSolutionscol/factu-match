@@ -607,6 +607,7 @@ document.getElementById("btn-comparar").addEventListener("click", async () => {
     sincronizarConGAS(data.resumen_general);
   } catch(err) {
     log(`Error: ${err.message}`, 'err');
+    alert(`❌ ${err.message}`);
   } finally {
     btn.disabled = false;
     btn.innerHTML = 'COMPARAR FACTURAS';
@@ -622,12 +623,17 @@ document.getElementById("btn-descargar").addEventListener("click", async () => {
     form.append("dian", archivoDian);
     form.append("siesa", archivoSiesa);
     const res = await fetch(`${API_URL}/descargar-reporte`, { method:"POST", body:form });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.detail || `Error ${res.status}`);
+    }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = "reporte.xlsx"; a.click();
   } catch(err) {
     log(`Error: ${err.message}`, 'err');
+    alert(`❌ ${err.message}`);
   } finally {
     btn.disabled = false;
     btn.innerHTML = 'EXPORTAR EXCEL';

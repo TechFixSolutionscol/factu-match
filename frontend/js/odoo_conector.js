@@ -310,6 +310,7 @@ document.getElementById('btn-odoo-comparar').addEventListener('click', async () 
 
   } catch (err) {
     log(`Error Odoo: ${err.message}`, 'err');
+    alert(`❌ Error en comparación Odoo:\n${err.message}`);
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg> COMPARAR CON ODOO';
@@ -352,6 +353,10 @@ document.getElementById('btn-odoo-download').addEventListener('click', async () 
     form.append('date_to', dateTo);
 
     const res  = await fetch(`${API_URL}/odoo/descargar-reporte`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.detail || `Error ${res.status}`);
+    }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -363,6 +368,7 @@ document.getElementById('btn-odoo-download').addEventListener('click', async () 
 
   } catch (err) {
     log(`Error descarga: ${err.message}`, 'err');
+    alert(`❌ Error al descargar reporte Odoo:\n${err.message}`);
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg> EXPORTAR EXCEL ODOO';
