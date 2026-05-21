@@ -13,6 +13,7 @@ import xmlrpc.client
 import re
 import json
 import os
+import concurrent.futures
 from datetime import date, datetime
 from typing import List, Optional, Dict, Any
 from cryptography.fernet import Fernet
@@ -130,7 +131,8 @@ class OdooConnector:
         self,
         date_from: str,
         date_to: str,
-        limit: int = 10000
+        limit: int = 10000,
+        executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
     ) -> List[Dict[str, Any]]:
         """
         Extrae facturas de proveedor de Odoo y las retorna en formato
@@ -144,6 +146,7 @@ class OdooConnector:
           date_from: Fecha inicio (YYYY-MM-DD) — REQUERIDO
           date_to:   Fecha fin (YYYY-MM-DD) — REQUERIDO
           limit:     Máximo de registros a extraer (safety)
+          executor:  ThreadPoolExecutor opcional para batches en paralelo
 
         Retorna lista de dicts con: nit, nombre, factura_clave,
         factura_original, fecha, monto, tipo_documento
@@ -162,7 +165,6 @@ class OdooConnector:
                 raise ValueError(
                     f"La fecha inicio ({date_from}) no puede ser mayor que la fecha fin ({date_to})."
                 )
-            # Advertir si el rango es mayor a 365 días
             delta_days = (to_dt - from_dt).days
             if delta_days > 365:
                 print(f"⚠️  ADVERTENCIA: Rango de {delta_days} días. Esto puede tardar más de lo esperado.")
@@ -194,32 +196,24 @@ class OdooConnector:
         if not invoice_ids:
             return []
 
-        # ── 2. Leer datos de facturas (en lotes si son muchas) ──
+        # ── 2. Leer datos de facturas en batches (paralelo si hay executor) ──
         BATCH_SIZE = 250
         all_invoices = []
 
-        for i in range(0, len(invoice_ids), BATCH_SIZE):
-            batch_ids = invoice_ids[i:i + BATCH_SIZE]
-            batch = models.execute_kw(
-                self.database, self._uid, self.api_key,
-                "account.move", "read",
-                [batch_ids],
-                {
-                    "fields": [
-                        "name",                        # Secuencia interna Odoo: "BILL/2025/00001"
-                        "invoice_date",                # Fecha de la factura
-                        "ref",                         # Referencia del proveedor (su número de factura)
-                        "partner_id",                  # Proveedor [id, nombre]
-                        "move_type",                   # in_invoice / in_refund
-                        "amount_total_signed",         # Total con signo
-                        "state",                       # Estado
-                        "payment_state",               # Estado de pago
-                    ]
-                }
-            )
-            all_invoices.extend(batch)
+        invoice_batches = [invoice_ids[i:i + BATCH_SIZE] for i in range(0, len(invoice_ids), BATCH_SIZE)]
 
-        # ── 3. Leer datos de proveedores (NIT, nombre) ──
+        if executor:
+            futures = [
+                executor.submit(self._read_invoice_batch, models, batch_ids)
+                for batch_ids in invoice_batches
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                all_invoices.extend(future.result())
+        else:
+            for batch_ids in invoice_batches:
+                all_invoices.extend(self._read_invoice_batch(models, batch_ids))
+
+        # ── 3. Leer datos de proveedores en batches (paralelo si hay executor) ──
         partner_ids = list(set(
             inv["partner_id"][0] for inv in all_invoices
             if isinstance(inv.get("partner_id"), list) and len(inv["partner_id"]) > 0
@@ -227,16 +221,19 @@ class OdooConnector:
 
         partner_map = {}
         if partner_ids:
-            for i in range(0, len(partner_ids), BATCH_SIZE):
-                batch_ids = partner_ids[i:i + BATCH_SIZE]
-                partners = models.execute_kw(
-                    self.database, self._uid, self.api_key,
-                    "res.partner", "read",
-                    [batch_ids],
-                    {"fields": ["id", "name", "vat", "l10n_latam_identification_type_id"]}
-                )
-                for p in partners:
-                    partner_map[p["id"]] = p
+            partner_batches = [partner_ids[i:i + BATCH_SIZE] for i in range(0, len(partner_ids), BATCH_SIZE)]
+            if executor:
+                futures = [
+                    executor.submit(self._read_partner_batch, models, batch_ids)
+                    for batch_ids in partner_batches
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    for p in future.result():
+                        partner_map[p["id"]] = p
+            else:
+                for batch_ids in partner_batches:
+                    for p in self._read_partner_batch(models, batch_ids):
+                        partner_map[p["id"]] = p
 
         # ── 4. Transformar a formato canónico ──
         facturas = []
@@ -302,6 +299,29 @@ class OdooConnector:
             return common.version()
         except Exception:
             return {}
+
+    def _read_invoice_batch(self, models, batch_ids: list) -> list:
+        """Lee un lote de facturas de Odoo (helper para paralelización)."""
+        return models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "account.move", "read",
+            [batch_ids],
+            {
+                "fields": [
+                    "name", "invoice_date", "ref", "partner_id",
+                    "move_type", "amount_total_signed", "state", "payment_state",
+                ]
+            }
+        )
+
+    def _read_partner_batch(self, models, batch_ids: list) -> list:
+        """Lee un lote de proveedores de Odoo (helper para paralelización)."""
+        return models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "res.partner", "read",
+            [batch_ids],
+            {"fields": ["id", "name", "vat", "l10n_latam_identification_type_id"]}
+        )
 
 
 # ──────────────────────────────────────────────

@@ -1,0 +1,36 @@
+{
+  "banco": {
+    "date": ["FECHA", "Fecha", "Fch Doc"],
+    "description": ["DESCRIPCIÓN", "Descripción", "Detalle", "Concepto", "Concept"],
+    "amount": ["VALOR", "Valor", "Monto", "Total", "Amount"],
+    "document": ["DCTO.", "DOCUMENTO", "Documento", "Nro Doc", "Número"]
+  },
+  "erp": {
+    "date": [
+      "Fecha de Factura/Recibo",
+      "Fecha docto. prov.",
+      "Fecha",
+      "FECHA",
+      "Date",
+      "Fch Doc"
+    ],
+    "reference": [
+      "Número",
+      "Docto. proveedor",
+      "Factura",
+      "Referencia",
+      "Documento",
+      "Reference",
+      "Nro Factura"
+    ],
+    "amountKeywords": [
+      "total",
+      "valor",
+      "monto",
+      "amount",
+      "pagado",
+      "saldo",
+      "importe"
+    ]
+  }
+}

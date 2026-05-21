@@ -1,9 +1,22 @@
 let bankFile = null;
 let erpFile = null;
 let reconciliationResults = null;
+let columnMapping = null; // cargado desde column_mapping.json
+
+// Carga el mapeo de columnas desde column_mapping.json
+async function loadColumnMapping() {
+  try {
+    const res = await fetch('column_mapping.json');
+    columnMapping = await res.json();
+  } catch {
+    // Fallback: mapeo mínimo por si falla la carga
+    columnMapping = null;
+  }
+}
 
 // UI Setup
 document.addEventListener("DOMContentLoaded", () => {
+  loadColumnMapping();
   setupReconUpload("input-banco", "zona-banco", "nombre-banco", f => bankFile = f, "BANCO");
   setupReconUpload("input-erp-banco", "zona-erp-banco", "nombre-erp-banco", f => erpFile = f, "ERP");
 
@@ -146,13 +159,42 @@ async function runReconciliation() {
   log("Conciliación completada.", 'ok');
 }
 
+// ──────────────────────────────────────────────
+// HELPERS DE MAPEO DE COLUMNAS (usando column_mapping.json)
+// ──────────────────────────────────────────────
+
+function _findColumn(candidates, row) {
+  for (const name of candidates) {
+    if (name in row) return row[name];
+  }
+  return null;
+}
+
+function _findColumnByKeyword(keywords, row) {
+  const keys = Object.keys(row);
+  const match = keys.find(k => keywords.some(kw => k.toLowerCase().includes(kw)));
+  return match ? row[match] : null;
+}
+
+// Usa el mapeo cargado + fallbacks heurísticos
+function _resolveValue(entryName, field, row) {
+  const cfg = columnMapping?.[entryName]?.[field];
+  if (cfg) {
+    const val = _findColumn(cfg, row);
+    if (val != null && val !== "") return val;
+  }
+  return null;
+}
+
+// ──────────────────────────────────────────────
+
 function normalizeBankData(rows) {
   return rows.map((r, index) => {
-    // Extraer valores exactos del formato Bancolombia
-    let date = r["FECHA"] || r["Fecha"] || "";
-    let desc = r["DESCRIPCIÓN"] || r["Descripción"] || "";
-    let amount = r["VALOR"] || r["Valor"] || 0;
-    let doc = r["DCTO."] || r["DOCUMENTO"] || r["Documento"] || "";
+    // Extraer valores: primero desde column_mapping.json, luego fallback
+    let date   = _resolveValue("banco", "date", r) || "";
+    let desc   = _resolveValue("banco", "description", r) || "";
+    let amount = _resolveValue("banco", "amount", r) || 0;
+    let doc    = _resolveValue("banco", "document", r) || "";
     
     // Fallback heurístico por si cambian de formato (opcional)
     if (!date) {
@@ -165,9 +207,7 @@ function normalizeBankData(rows) {
       desc = descKey ? r[descKey] : `Movimiento ${index+1}`;
     }
     if (amount === 0) {
-      const keys = Object.keys(r);
-      let amtKey = keys.find(k => ['valor', 'monto'].some(word => k.toLowerCase().includes(word)));
-      amount = amtKey ? r[amtKey] : 0;
+      amount = _findColumnByKeyword(["valor", "monto"], r) || 0;
     }
 
     // Conversión de tipos
@@ -192,12 +232,13 @@ function normalizeERPData(rows) {
   return rows.map((r, index) => {
     const keys = Object.keys(r);
 
-    // Mapeo exacto para SIESA u Odoo v15
-    let date = r["Fecha de Factura/Recibo"] || r["Fecha docto. prov."] || r["Fecha"] || r["FECHA"] || r["Date"] || "";
-    let ref = r["Número"] || r["Docto. proveedor"] || r["Factura"] || r["Referencia"] || r["Documento"] || r["Reference"] || "";
+    // Mapeo exacto para SIESA u Odoo v15 (desde column_mapping.json + fallback)
+    let date = _resolveValue("erp", "date", r) || r["Fecha"] || r["FECHA"] || "";
+    let ref  = _resolveValue("erp", "reference", r) || r["Factura"] || r["Referencia"] || "";
     
     // Búsqueda del monto
-    let amtKey = keys.find(k => ['total', 'valor', 'monto', 'amount', 'pagado', 'saldo'].some(word => k.toLowerCase().includes(word)));
+    const amtKeywords = columnMapping?.erp?.amountKeywords || ["total", "valor", "monto", "amount", "pagado", "saldo"];
+    let amtKey = keys.find(k => amtKeywords.some(word => k.toLowerCase().includes(word)));
     let amount = r["Total con signo"] || (amtKey ? r[amtKey] : 0);
 
     // Fallbacks

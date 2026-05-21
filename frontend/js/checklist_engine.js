@@ -40,11 +40,6 @@ async function runChecklist() {
     return;
   }
   const [year, month] = monthVal.split('-');
-  const groqKey = localStorage.getItem('groq_api_key') || '';
-  if (!groqKey) {
-    alert('Configura la clave API de Groq en la pantalla de Configuración.');
-    return;
-  }
 
   clearResults();
   btnRun.disabled = true;
@@ -53,7 +48,6 @@ async function runChecklist() {
   const formData = new FormData();
   formData.append('month', month);
   formData.append('year', year);
-  formData.append('groq_key', groqKey);
 
   try {
     const res = await fetch(`${API_URL}/api/run-ai-checklist`, {

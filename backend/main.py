@@ -1,18 +1,24 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 import os
 import io
 import json
 import httpx
+import hashlib
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel
 from typing import List, Optional
-from comparador import comparar_facturas, comparar_facturas_odoo, generar_excel_reporte
+from comparador import comparar_facturas, comparar_facturas_odoo, generar_excel_reporte, generar_excel_reporte_bytes
 from odoo_match import OdooConnector, CredentialManager, _normalizar_clave_odoo, _normalizar_nit_odoo
 from email_parser import process_emails, connect_db
 from ai_auditor import build_odoo_context, run_ai_audit
 from datetime import datetime, timedelta
 import psycopg2.extras
+from dotenv import load_dotenv
+from cachetools import TTLCache
+load_dotenv()
 app = FastAPI(title="Comparador Facturas DIAN vs Siesa")
 
 app.add_middleware(
@@ -25,6 +31,35 @@ app.add_middleware(
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
+# ── Validación de ENCRYPTION_KEY (requerida) ──
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+if not ENCRYPTION_KEY:
+    raise RuntimeError(
+        "ENCRYPTION_KEY es obligatoria. "
+        "Ejecuta: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        " y configúrala como variable de entorno en Render."
+    )
+
+# ── Configuración de rendimiento ──
+executor = ThreadPoolExecutor(max_workers=2)
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+# ── Caché para respuestas de Groq (5 min TTL) ──
+groq_cache = TTLCache(maxsize=128, ttl=300)
+
+# ── Auth middleware opcional (API_AUTH_TOKEN en entorno) ──
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "")
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    if API_AUTH_TOKEN:
+        if request.method != "OPTIONS" and request.url.path != "/":
+            auth = request.headers.get("authorization", "")
+            if not auth.startswith("Bearer ") or auth.removeprefix("Bearer ") != API_AUTH_TOKEN:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=401, content={"detail": "No autorizado. Token inválido o faltante."})
+    return await call_next(request)
+
 
 @app.get("/")
 def root():
@@ -35,12 +70,19 @@ def root():
 async def comparar(
     dian: UploadFile = File(...),
     siesa: UploadFile = File(...),
+    limit: int = Form(0),
+    offset: int = Form(0),
 ):
     try:
+        for name, f in [("DIAN", dian), ("Siesa", siesa)]:
+            if f.size and f.size > MAX_FILE_SIZE:
+                raise HTTPException(status_code=413, detail=f"Archivo {name} demasiado grande ({f.size / 1024 / 1024:.1f} MB). Máximo: {MAX_FILE_SIZE / 1024 / 1024:.0f} MB.")
+
         dian_bytes = await dian.read()
         siesa_bytes = await siesa.read()
 
-        resultado = comparar_facturas(dian_bytes, siesa_bytes)
+        loop = asyncio.get_event_loop()
+        resultado = await loop.run_in_executor(executor, comparar_facturas, dian_bytes, siesa_bytes, limit, offset)
 
         if not resultado["proveedores"]:
             raise HTTPException(status_code=400, detail="No se encontraron datos para comparar.")
@@ -62,16 +104,21 @@ async def descargar_reporte(
     siesa: UploadFile = File(...),
 ):
     try:
+        for name, f in [("DIAN", dian), ("Siesa", siesa)]:
+            if f.size and f.size > MAX_FILE_SIZE:
+                raise HTTPException(status_code=413, detail=f"Archivo {name} demasiado grande.")
+
         dian_bytes = await dian.read()
         siesa_bytes = await siesa.read()
 
-        resultado = comparar_facturas(dian_bytes, siesa_bytes)
-        ruta_excel = generar_excel_reporte(resultado)
+        loop = asyncio.get_event_loop()
+        resultado = await loop.run_in_executor(executor, comparar_facturas, dian_bytes, siesa_bytes)
+        excel_bytes = await loop.run_in_executor(executor, generar_excel_reporte_bytes, resultado)
 
-        return FileResponse(
-            path=ruta_excel,
-            filename="reporte_comparacion_facturas.xlsx",
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return StreamingResponse(
+            iter([excel_bytes]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=reporte_comparacion_facturas.xlsx"}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generando reporte: {str(e)}")
@@ -149,7 +196,10 @@ async def odoo_comparar(
             username=creds["username"],
             api_key=creds["api_key"]
         )
-        facturas_odoo = connector.fetch_invoices(date_from=date_from, date_to=date_to)
+        loop = asyncio.get_event_loop()
+        facturas_odoo = await loop.run_in_executor(
+            executor, connector.fetch_invoices, date_from, date_to, 10000, executor
+        )
         resultado = comparar_facturas_odoo(dian_bytes, facturas_odoo)
 
         resultado["resumen_general"]["total_odoo"] = len(facturas_odoo)
@@ -185,7 +235,10 @@ async def odoo_descargar_reporte(
             username=creds["username"],
             api_key=creds["api_key"]
         )
-        facturas_odoo = connector.fetch_invoices(date_from=date_from, date_to=date_to)
+        loop = asyncio.get_event_loop()
+        facturas_odoo = await loop.run_in_executor(
+            executor, connector.fetch_invoices, date_from, date_to, 10000, executor
+        )
         resultado = comparar_facturas_odoo(dian_bytes, facturas_odoo)
         ruta_excel = generar_excel_reporte(resultado)
 
@@ -297,6 +350,12 @@ async def generar_narrativa_groq(resultado: dict) -> str:
     if not GROQ_API_KEY:
         return generar_narrativa_local(resultado)
 
+    # Cache: mismo resultado → misma narrativa (5 min TTL)
+    cache_key = hashlib.md5(json.dumps(resultado, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    cached = groq_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     resumen = construir_resumen_para_ia(resultado)
 
     prompt = f"""Eres un asistente contable. Analiza este resumen de comparación de facturas entre la DIAN y el sistema Siesa, y genera un informe claro y profesional en español.
@@ -328,7 +387,9 @@ Genera el informe ahora:"""
                 }
             )
             data = response.json()
-            return data["choices"][0]["message"]["content"]
+            narrativa = data["choices"][0]["message"]["content"]
+            groq_cache[cache_key] = narrativa
+            return narrativa
     except Exception:
         return generar_narrativa_local(resultado)
 
@@ -386,7 +447,8 @@ async def sync_invoices_from_email():
     no leídas y las guarda en la base de datos de Neon PostgreSQL.
     """
     try:
-        resultado = process_emails()
+        loop = asyncio.get_event_loop()
+        resultado = await loop.run_in_executor(executor, process_emails)
         if resultado.get("status") == "error":
             raise HTTPException(status_code=500, detail=resultado.get("message"))
         return resultado
@@ -400,36 +462,52 @@ async def sync_invoices_from_email():
 # ──────────────────────────────────────────────
 
 @app.get("/api/dashboard-auditoria")
-async def get_dashboard_data(month: int = None, year: int = None):
-    """Retorna las métricas y la lista de facturas faltantes."""
+async def get_dashboard_data(
+    month: int = None,
+    year: int = None,
+    limit: int = 50,
+    offset: int = 0
+):
+    """Retorna las métricas y la lista paginada de facturas faltantes."""
     try:
         db = connect_db()
         cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
+        # Query con paginación
         query = "SELECT * FROM electronic_documents"
+        count_query = "SELECT COUNT(*) as total FROM electronic_documents"
         params = []
+        where_clause = ""
         if month and year:
-            query += " WHERE EXTRACT(MONTH FROM issue_date) = %s AND EXTRACT(YEAR FROM issue_date) = %s"
+            where_clause = " WHERE EXTRACT(MONTH FROM issue_date) = %s AND EXTRACT(YEAR FROM issue_date) = %s"
             params.extend([month, year])
             
-        query += " ORDER BY issue_date DESC"
+        query += where_clause + " ORDER BY issue_date DESC LIMIT %s OFFSET %s"
+        count_query += where_clause
         
-        cursor.execute(query, tuple(params))
+        query_params = tuple(params + [limit, offset])
+        cursor.execute(query, query_params)
         documents = cursor.fetchall()
         
-        total_recibidas = len(documents)
-        total_cruzadas = sum(1 for d in documents if d['erp_sync_status'] == 'MATCHED')
-        total_faltantes = sum(1 for d in documents if d['erp_sync_status'] != 'MATCHED')
+        cursor.execute(count_query, tuple(params))
+        total_recibidas = cursor.fetchone()["total"]
+        
+        faltantes = [d for d in documents if d['erp_sync_status'] != 'MATCHED']
         
         return {
             "success": True,
+            "pagination": {
+                "total": total_recibidas,
+                "limit": limit,
+                "offset": offset
+            },
             "metrics": {
                 "total_recibidas": total_recibidas,
-                "total_cruzadas": total_cruzadas,
-                "total_faltantes": total_faltantes,
-                "accuracy": round((total_cruzadas / total_recibidas * 100) if total_recibidas > 0 else 0, 1)
+                "total_cruzadas": total_recibidas - len(faltantes),
+                "total_faltantes": len(faltantes),
+                "accuracy": round(((total_recibidas - len(faltantes)) / total_recibidas * 100) if total_recibidas > 0 else 0, 1)
             },
-            "faltantes": [d for d in documents if d['erp_sync_status'] != 'MATCHED']
+            "faltantes": faltantes
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error cargando dashboard: {str(e)}")
@@ -452,7 +530,10 @@ async def sync_odoo_invoices(credentials: str = Form(...), date_from: str = Form
         )
         
         # Traer facturas de Odoo en el rango
-        facturas_odoo = connector.fetch_invoices(date_from=date_from, date_to=date_to)
+        loop = asyncio.get_event_loop()
+        facturas_odoo = await loop.run_in_executor(
+            executor, connector.fetch_invoices, date_from, date_to, 10000, executor
+        )
         
         db = connect_db()
         cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -511,7 +592,7 @@ async def sync_odoo_invoices(credentials: str = Form(...), date_from: str = Form
 async def run_ai_checklist(
     month: str = Form(...),
     year: str = Form(...),
-    groq_key: str = Form(...),
+    groq_key: Optional[str] = Form(None),
     credentials: Optional[str] = Form(None),
     odoo_url: Optional[str] = Form(None),
     odoo_db: Optional[str] = Form(None),
@@ -547,8 +628,12 @@ async def run_ai_checklist(
         # Extraer contexto contable de Odoo
         context = build_odoo_context(connector, date_from, date_to)
 
-        # Pasar al motor IA
-        anomalias = run_ai_audit(context, groq_key)
+        # Resolver API key: formulario > variable de entorno
+        api_key = groq_key or GROQ_API_KEY
+        if not api_key:
+            raise HTTPException(status_code=400,
+                detail="GROQ_API_KEY no configurada. Defínela como variable de entorno en Render o pásala por formulario.")
+        anomalias = run_ai_audit(context, api_key)
 
         return {
             "success": True,

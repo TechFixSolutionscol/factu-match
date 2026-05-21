@@ -9,6 +9,49 @@ from datetime import datetime
 
 
 # ──────────────────────────────────────────────
+# VALIDACIÓN DE FORMATO DE ARCHIVOS
+# ──────────────────────────────────────────────
+
+# Firmas de archivos (magic bytes)
+XLS_SIG = b'\xd0\xcf\x11\xe0'          # OLE2 Compound Document (.xls)
+XLSX_SIG = b'PK\x03\x04'                # ZIP con contenido OpenXML (.xlsx)
+XLS_FULL_SIG = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
+
+
+def _detect_excel_format(contenido: bytes, nombre_archivo: str = "archivo") -> str:
+    """
+    Detecta si los bytes corresponden a un Excel .xls o .xlsx.
+    Valida las firmas mágicas y lanza error descriptivo si no coincide.
+    """
+    if len(contenido) < 8:
+        raise ValueError(
+            f"El {nombre_archivo} está vacío o es demasiado pequeño "
+            f"({len(contenido)} bytes)."
+        )
+
+    if contenido[:4] == XLSX_SIG:
+        return "xlsx"
+    if contenido[:4] == XLS_SIG or contenido[:8] == XLS_FULL_SIG:
+        return "xls"
+
+    # Reportar qué tipo de archivo parece ser (para depuración)
+    header_hex = contenido[:16].hex().upper()
+    sugerencia = ""
+    if contenido[:4] == b'\x25\x50\x44\x46':
+        sugerencia = " Parece ser un archivo PDF, no Excel."
+    elif contenido[:2] == b'\xff\xfe' or contenido[:2] == b'\xfe\xff':
+        sugerencia = " Parece ser un archivo de texto (CSV/TSV), no Excel."
+    elif contenido[:4] == b'\x89\x50\x4e\x47':
+        sugerencia = " Parece ser una imagen PNG, no Excel."
+
+    raise ValueError(
+        f"El {nombre_archivo} no tiene un formato Excel válido. "
+        f"Se esperaba .xls o .xlsx. "
+        f"Firma detectada: 0x{header_hex[:12]}.{sugerencia}"
+    )
+
+
+# ──────────────────────────────────────────────
 # NORMALIZACIÓN DE CLAVES
 # ──────────────────────────────────────────────
 
@@ -53,7 +96,7 @@ def normalizar_nit(nit) -> str:
 
 def leer_dian(contenido: bytes) -> pd.DataFrame:
     """Lee el Excel de la DIAN y retorna DataFrame normalizado."""
-    extension = "xls" if contenido[:2] == b'\xd0\xcf' else "xlsx"
+    extension = _detect_excel_format(contenido, "archivo DIAN")
 
     df = pd.read_excel(
         io.BytesIO(contenido),
@@ -114,9 +157,7 @@ def leer_dian(contenido: bytes) -> pd.DataFrame:
 
 def leer_siesa(contenido: bytes) -> pd.DataFrame:
     """Lee el Excel de Siesa y retorna DataFrame normalizado."""
-    extension = "xls"
-    if contenido[:4] == b'PK\x03\x04':  # magic bytes de .xlsx
-        extension = "xlsx"
+    extension = _detect_excel_format(contenido, "archivo Siesa")
 
     df = pd.read_excel(
         io.BytesIO(contenido),
@@ -153,13 +194,12 @@ def leer_siesa(contenido: bytes) -> pd.DataFrame:
 # COMPARACIÓN PRINCIPAL
 # ──────────────────────────────────────────────
 
-def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame) -> dict:
+def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame, limit: int = 0, offset: int = 0) -> dict:
     """
     Motor central de comparación reutilizable.
     Acepta DataFrames ya normalizados de cualquier fuente (Siesa Excel u Odoo API).
+    limit/offset: paginación sobre la lista de proveedores (0 = sin paginar).
     """
-    # Match por (NIT, clave) únicamente. NO usar solo `clave` como fallback:
-    # genera falsos positivos cuando dos proveedores comparten prefijo+folio.
     siesa_index = set(zip(df_siesa["nit"], df_siesa["clave"]))
 
     proveedores = {}
@@ -202,13 +242,19 @@ def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame) -> dict
             "encontradas": sorted(datos["encontradas"])
         })
 
+    total_proveedores = len(lista_proveedores)
+
+    # Paginación
+    if limit > 0:
+        lista_proveedores = lista_proveedores[offset:offset + limit]
+
     total_dian = sum(p["total_dian"] for p in lista_proveedores)
     total_siesa = sum(p["total_en_siesa"] for p in lista_proveedores)
     total_faltantes = sum(p["total_faltantes"] for p in lista_proveedores)
 
     return {
         "resumen_general": {
-            "total_proveedores": len(lista_proveedores),
+            "total_proveedores": total_proveedores,
             "total_dian": total_dian,
             "total_en_siesa": total_siesa,
             "total_faltantes": total_faltantes,
@@ -239,18 +285,18 @@ def _odoo_to_siesa_df(facturas_odoo: list) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def comparar_facturas(dian_bytes: bytes, siesa_bytes: bytes) -> dict:
+def comparar_facturas(dian_bytes: bytes, siesa_bytes: bytes, limit: int = 0, offset: int = 0) -> dict:
     """Compara DIAN vs archivo Excel de Siesa."""
     df_dian = leer_dian(dian_bytes)
     df_siesa = leer_siesa(siesa_bytes)
-    return _ejecutar_comparacion(df_dian, df_siesa)
+    return _ejecutar_comparacion(df_dian, df_siesa, limit, offset)
 
 
-def comparar_facturas_odoo(dian_bytes: bytes, facturas_odoo: list) -> dict:
+def comparar_facturas_odoo(dian_bytes: bytes, facturas_odoo: list, limit: int = 0, offset: int = 0) -> dict:
     """Compara DIAN vs facturas extraídas de Odoo vía XML-RPC API."""
     df_dian = leer_dian(dian_bytes)
     df_siesa = _odoo_to_siesa_df(facturas_odoo)
-    return _ejecutar_comparacion(df_dian, df_siesa)
+    return _ejecutar_comparacion(df_dian, df_siesa, limit, offset)
 
 
 # ──────────────────────────────────────────────
@@ -258,24 +304,31 @@ def comparar_facturas_odoo(dian_bytes: bytes, facturas_odoo: list) -> dict:
 # ──────────────────────────────────────────────
 
 def generar_excel_reporte(resultado: dict) -> str:
-    wb = Workbook()
-
-    # ── Hoja 1: Resumen general ──
-    ws_resumen = wb.active
-    ws_resumen.title = "Resumen General"
-    _estilo_resumen(ws_resumen, resultado)
-
-    # ── Hoja 2: Detalle por proveedor ──
-    ws_detalle = wb.create_sheet("Detalle por Proveedor")
-    _estilo_detalle(ws_detalle, resultado)
-
-    # ── Hoja 3: Solo faltantes ──
-    ws_faltantes = wb.create_sheet("Facturas Faltantes")
-    _estilo_faltantes(ws_faltantes, resultado)
-
+    wb = _build_workbook(resultado)
     ruta = "/tmp/reporte_comparacion_facturas.xlsx"
     wb.save(ruta)
     return ruta
+
+
+def generar_excel_reporte_bytes(resultado: dict) -> bytes:
+    """Genera el Excel en memoria y retorna bytes (sin escribir a disco)."""
+    wb = _build_workbook(resultado)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _build_workbook(resultado: dict) -> Workbook:
+    wb = Workbook()
+    ws_resumen = wb.active
+    ws_resumen.title = "Resumen General"
+    _estilo_resumen(ws_resumen, resultado)
+    ws_detalle = wb.create_sheet("Detalle por Proveedor")
+    _estilo_detalle(ws_detalle, resultado)
+    ws_faltantes = wb.create_sheet("Facturas Faltantes")
+    _estilo_faltantes(ws_faltantes, resultado)
+    return wb
 
 
 def _color_header(ws, fila, col_inicio, col_fin, texto, color="1A3A5C"):
