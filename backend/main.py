@@ -450,11 +450,12 @@ def ensure_purchase_tables():
     try:
         db = connect_db()
         cursor = db.cursor()
+        cursor.execute("DROP TABLE IF EXISTS purchase_review CASCADE")
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS purchase_review (
+            CREATE TABLE purchase_review (
                 id SERIAL PRIMARY KEY,
-                doc_id INTEGER NOT NULL REFERENCES electronic_documents(id) ON DELETE CASCADE,
-                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                doc_id UUID NOT NULL,
+                company_id UUID NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
                 ai_suggestions JSONB,
                 manual_lines JSONB,
@@ -689,7 +690,7 @@ async def purchase_pending(limit: int = 50, offset: int = 0):
 
 
 @app.post("/api/purchase/parse-lines")
-async def purchase_parse_lines(doc_id: int = Form(...)):
+async def purchase_parse_lines(doc_id: str = Form(...)):
     """
     Parsea y retorna las líneas de detalle de un documento específico.
     """
@@ -726,7 +727,7 @@ async def purchase_parse_lines(doc_id: int = Form(...)):
 
 @app.post("/api/purchase/ai-map")
 async def purchase_ai_map(
-    doc_id: int = Form(...),
+    doc_id: str = Form(...),
     credentials: str = Form(...),
     groq_key: Optional[str] = Form(None),
 ):
@@ -811,7 +812,7 @@ async def purchase_ai_map(
 
 @app.post("/api/purchase/review")
 async def purchase_review(
-    doc_id: int = Form(...),
+    doc_id: str = Form(...),
     action: str = Form(...),
     manual_lines: Optional[str] = Form(None),
 ):
@@ -863,7 +864,7 @@ async def purchase_review(
 
 @app.post("/api/purchase/create-oc")
 async def purchase_create_oc(
-    doc_id: int = Form(...),
+    doc_id: str = Form(...),
     credentials: str = Form(...),
     action: str = Form("create"),  # "create" | "create_and_confirm"
 ):

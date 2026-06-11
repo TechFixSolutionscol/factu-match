@@ -4,8 +4,8 @@
 
 CREATE TABLE IF NOT EXISTS purchase_review (
     id SERIAL PRIMARY KEY,
-    doc_id INTEGER NOT NULL REFERENCES electronic_documents(id) ON DELETE CASCADE,
-    company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    doc_id UUID NOT NULL,
+    company_id UUID NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
     ai_suggestions JSONB,
     manual_lines JSONB,
