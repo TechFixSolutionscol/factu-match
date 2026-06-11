@@ -952,15 +952,25 @@ async def purchase_create_oc(
         if not partner:
             raise HTTPException(status_code=404, detail=f"Proveedor con NIT {supplier_nit_clean} no encontrado en Odoo.")
 
-        # 5. Preparar líneas para Odoo
+        # 5. Preparar líneas para Odoo — validar producto_id
         oc_lines = []
+        sin_producto = 0
         for line in lines:
+            pid = line.get("producto_id")
+            if not pid:
+                sin_producto += 1
             oc_lines.append({
-                "producto_id": line.get("producto_id"),
+                "producto_id": pid,
                 "cantidad": line.get("cantidad", 1),
                 "precio_unitario": line.get("precio_unitario", 0),
                 "nombre": line.get("producto_nombre") or line.get("descripcion_original") or line.get("descripcion", ""),
             })
+
+        if sin_producto == len(oc_lines):
+            raise HTTPException(
+                status_code=400,
+                detail="Ninguna línea tiene un producto_id válido. Debes mapear productos antes de crear la OC."
+            )
 
         # 6. Crear OC
         reference = f"FACTUMATCH-{doc_number}" if doc_number else f"FACTUMATCH-{doc_id}"
@@ -994,8 +1004,11 @@ async def purchase_create_oc(
             "purchase_order_name": order.get("name", ""),
             "partner_name": partner.get("name", ""),
             "total_lineas": len(oc_lines),
+            "lineas_procesadas": order.get("lineas_procesadas", len(oc_lines) - sin_producto),
+            "lineas_omitidas": order.get("lineas_omitidas", sin_producto),
             "state": state,
             "message": f"OC {order.get('name', '')} creada exitosamente." +
+                      (f" {order.get('lineas_omitidas', sin_producto)} línea(s) omitida(s) por no tener producto mapeado." if (order.get("lineas_omitidas", sin_producto)) else "") +
                       (" Confirmada." if action == "create_and_confirm" else " En estado borrador.")
         }
 

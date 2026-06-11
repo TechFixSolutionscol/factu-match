@@ -395,24 +395,34 @@ class OdooConnector:
         from datetime import datetime, timedelta
         planned = date_planned or (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
 
-        # Construir order_lines con el formato Odoo (0, 0, valores)
-        order_lines = []
-        for i, line in enumerate(lines):
+        # Validar y filtrar líneas sin producto
+        valid_lines = []
+        skipped = 0
+        for line in lines:
+            pid = line.get("producto_id")
+            if not pid:
+                skipped += 1
+                continue
             vals = {
-                "product_id": line.get("producto_id", False),
+                "product_id": pid,
                 "product_qty": float(line.get("cantidad", 1)),
                 "price_unit": float(line.get("precio_unitario", 0)),
                 "name": line.get("nombre") or line.get("descripcion_original", ""),
                 "date_planned": planned,
             }
-            order_lines.append((0, 0, vals))
+            valid_lines.append((0, 0, vals))
+
+        if not valid_lines:
+            raise ValueError(
+                "Ninguna línea tiene un producto_id válido. "
+                "Las líneas sin producto mapeado no se pueden incluir en la OC."
+            )
 
         order_vals = {
             "partner_id": partner_id,
             "date_order": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "date_planned": planned,
-            "order_line": order_lines,
-            "currency_id": 1,  # COP / USD — se ajusta según Odoo
+            "order_line": valid_lines,
         }
         if reference:
             order_vals["origin"] = reference
@@ -431,7 +441,10 @@ class OdooConnector:
             [order_id],
             {"fields": ["id", "name", "state", "partner_id", "amount_total"]}
         )
-        return result[0] if result else {"id": order_id}
+        info = result[0] if result else {"id": order_id}
+        info["lineas_procesadas"] = len(valid_lines)
+        info["lineas_omitidas"] = skipped
+        return info
 
     # ── Confirmar Orden de Compra ──
 
