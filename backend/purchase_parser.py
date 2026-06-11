@@ -2,11 +2,12 @@
 purchase_parser.py — Mapeo IA de líneas de factura a productos Odoo.
 
 Flujo:
-  1. map_lines_to_odoo() recibe las líneas XML + catálogo Odoo
-  2. Construye prompt y llama a Groq
-  3. Groq devuelve JSON con producto_id, nombre, confianza
-  4. Resultado se cachea en product_mapping_cache (Neon) para no repetir
-  5. Si Groq falla o no encuentra match, usa fuzzy matching local (thefuzz)
+  1. Normaliza descripciones de líneas (stop-words, capacidades, colores)
+  2. Pre-filtra catálogo Odoo a top 20 candidatos por línea vía fuzzy
+  3. Envía solo candidatos a Groq con prompt semántico mejorado
+  4. Groq devuelve JSON con producto_id, nombre, confianza
+  5. Post-procesa líneas sin match con fuzzy local mejorado
+  6. Cachea con hash que incluye líneas + catálogo + versión del algoritmo
 """
 
 import json
@@ -18,54 +19,237 @@ import re
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
+ALGORITHM_VERSION = "3"
+
+_STOP_WORDS = {
+    "N/A", "UND", "UNIDAD", "UNIDADES", "COLOR", "NEGRO", "BLANCO",
+    "ROJO", "AZUL", "VERDE", "AMARILLO", "GRIS", "PLATEADO", "DORADO",
+    "WIFI", "SSD", "HDD", "GB", "TB", "MHZ", "GHZ", "HZ", "N/A",
+    "NADA", "SIN", "NO", "APLICA", "VARIOS", "DIVERSOS", "GENÉRICO",
+    "GENERICO", "STANDARD", "ESTANDAR", "BASICO", "BASIC", "PRO",
+    "LITE", "NUEVO", "NEW", "ORIGINAL", "REACONDICIONADO",
+    "CABLE", "ADAPTADOR", "CARGADOR", "MANUAL", "GUIA", "GARANTIA",
+    "INCLUYE", "INCLUIDO", "MAS", "PLUS", "KIT", "SET", "PAQUETE",
+}
+
+_CAPACITY_RE = re.compile(
+    r'\b\d+\s*(?:GB|TB|MHZ|GHZ)\b',
+    re.IGNORECASE
+)
+_FRACTION_CAPACITY_RE = re.compile(
+    r'\b\d+/\d+\s*(?:GB|TB)\b',
+    re.IGNORECASE
+)
+_TECH_SPEC_RE = re.compile(
+    r'\b\d+x\d+\b',
+    re.IGNORECASE
+)
+_MODEL_SUFFIX_RE = re.compile(
+    r'\b(?:N[/-]A|N/A|NA)\b',
+    re.IGNORECASE
+)
+_MULTI_SPACE_RE = re.compile(r'\s+')
+_NON_ALPHA_RE = re.compile(r'[^a-záéíóúñA-ZÁÉÍÓÚÑ0-9\s]')
+
+
+def _normalize_desc(raw: str) -> str:
+    if not raw:
+        return ""
+    s = raw.upper().strip()
+    s = _MODEL_SUFFIX_RE.sub(" ", s)
+    s = _FRACTION_CAPACITY_RE.sub(" ", s)
+    s = _CAPACITY_RE.sub(" ", s)
+    s = _TECH_SPEC_RE.sub(" ", s)
+    words = _MULTI_SPACE_RE.split(s)
+    cleaned = []
+    for w in words:
+        w = w.strip()
+        if not w:
+            continue
+        if w in _STOP_WORDS:
+            continue
+        if re.match(r'^\d+[/\.]\d+$', w):
+            continue
+        cleaned.append(w)
+    return " ".join(cleaned)
+
+
+def _extract_brand_tokens(desc: str) -> set:
+    """Extrae tokens de marca/identificación: palabras largas y códigos."""
+    tokens = set()
+    for w in desc.upper().split():
+        wc = re.sub(r'[^a-záéíóúñA-ZÁÉÍÓÚÑ0-9]', '', w)
+        if len(wc) >= 3 and not wc.isdigit():
+            tokens.add(wc.lower())
+    return tokens
+
+
+def _fuzzy_match_line(
+    raw_desc: str,
+    norm_desc: str,
+    odoo_products: list,
+    threshold: int = 35
+) -> dict:
+    if not norm_desc or not odoo_products:
+        return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
+
+    try:
+        from thefuzz import fuzz
+    except ImportError:
+        return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
+
+    brand_tokens = _extract_brand_tokens(raw_desc)
+    best_score = 0
+    best_pid = None
+    best_pname = None
+
+    for p in odoo_products:
+        pname = (p.get("name") or "").strip()
+        pcode = (p.get("default_code") or "").strip()
+        pname_norm = _normalize_desc(pname)
+        pcode_norm = _normalize_desc(pcode)
+
+        score_name_ts = fuzz.token_set_ratio(norm_desc, pname_norm)
+        score_name_partial = fuzz.partial_ratio(norm_desc, pname_norm)
+        score_name_full = fuzz.ratio(norm_desc, pname_norm)
+        score_code = fuzz.partial_ratio(norm_desc, pcode_norm) if pcode_norm else 0
+
+        score = max(score_name_ts, score_name_partial, score_name_full, score_code)
+
+        if brand_tokens:
+            pbrand = _extract_brand_tokens(pname)
+            overlap = brand_tokens & pbrand
+            if overlap:
+                score = max(score, min(95, score + 25))
+
+        if pcode_norm and pcode_norm in norm_desc:
+            score = max(score, 88)
+
+        if pname_norm and pname_norm in norm_desc:
+            score = max(score, 92)
+
+        if score > best_score:
+            best_score = score
+            best_pid = p["id"]
+            best_pname = pname
+
+    if best_score >= threshold:
+        return {
+            "producto_id": best_pid,
+            "producto_nombre": best_pname,
+            "confianza": round(min(best_score / 100.0, 1.0), 2),
+        }
+
+    return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
+
+
+def _select_top_candidates(
+    line_items: list,
+    odoo_products: list,
+    top_n: int = 25
+) -> list:
+    """
+    Pre-filtra el catálogo Odoo a los mejores top_n candidatos por línea.
+    Retorna lista única de productos que cubren todas las líneas.
+    """
+    if not odoo_products:
+        return []
+
+    try:
+        from thefuzz import fuzz
+    except ImportError:
+        return odoo_products[:top_n]
+
+    scored = {}
+    for line in line_items:
+        raw_desc = line.get("descripcion_original") or line.get("descripcion", "")
+        norm_desc = _normalize_desc(raw_desc)
+        if not norm_desc:
+            continue
+        brand_tokens = _extract_brand_tokens(raw_desc)
+        for p in odoo_products:
+            pid = p["id"]
+            pname_norm = _normalize_desc(p.get("name") or "")
+            if not pname_norm:
+                continue
+            s = fuzz.token_set_ratio(norm_desc, pname_norm)
+            s = max(s, fuzz.partial_ratio(norm_desc, pname_norm))
+            s = max(s, fuzz.ratio(norm_desc, pname_norm))
+            if brand_tokens:
+                pbrand = _extract_brand_tokens(p.get("name") or "")
+                if brand_tokens & pbrand:
+                    s = max(s, min(95, s + 25))
+            if pid not in scored or s > scored[pid]:
+                scored[pid] = s
+
+    sorted_pids = sorted(scored, key=lambda pid: scored[pid], reverse=True)
+    top_pids = set(sorted_pids[:top_n])
+
+    result = [p for p in odoo_products if p["id"] in top_pids]
+    print(f"[purchase_parser] Catálogo completo: {len(odoo_products)} productos → pre-seleccionados: {len(result)}")
+    return result if result else odoo_products[:top_n]
 
 
 def _build_prompt(line_items: list, odoo_products: list) -> str:
-    """Construye el prompt para Groq con las líneas XML y el catálogo Odoo."""
-    lineas_json = json.dumps(line_items, ensure_ascii=False, indent=2)
+    raw_items = []
+    for line in line_items:
+        raw = line.get("descripcion_original") or line.get("descripcion", "")
+        norm = _normalize_desc(raw)
+        raw_items.append({
+            "numero": line.get("numero", ""),
+            "descripcion_original": raw,
+            "descripcion_normalizada": norm,
+            "cantidad": line.get("cantidad", 0),
+            "precio_unitario": line.get("precio_unitario", 0),
+        })
     catalogo_json = json.dumps(odoo_products, ensure_ascii=False, indent=2)
+    lineas_json = json.dumps(raw_items, ensure_ascii=False, indent=2)
 
     return f"""Eres un auxiliar contable experto en facturación electrónica colombiana.
-Tu tarea es mapear cada línea de una factura electrónica (XML UBL 2.1) al producto
-más similar en el catálogo de Odoo.
+Tu tarea es mapear cada línea de una factura electrónica al producto más similar
+en el catálogo de Odoo.
 
-Reglas:
-1. Compara la descripción de cada línea contra el nombre y código del producto en Odoo.
-2. Siempre elige el producto más parecido del catálogo, incluso con baja confianza.
-   Si absolutamente ningún producto se acerca, usa producto_id = null.
-3. Respeta cantidades y precios originales de la factura (NO los modifiques).
-4. Responde ÚNICAMENTE con un array JSON válido. Sin markdown, sin texto adicional.
+Reglas obligatorias:
+1. Para cada línea, analiza la 'descripcion_original' y la 'descripcion_normalizada'.
+2. Ignora colores, capacidades técnicas (GB, TB, MHZ), conectividad (WIFI, SSD, HDD),
+   y palabras irrelevantes (N/A, UND, UNIDAD, COLOR, NEGRO, etc.).
+3. Enfócate en la MARCA y el NOMBRE PRINCIPAL del producto.
+   Ej: "CELULAR INFINIX N/A SMART 20 4/128GB N/A" → el producto es "CELULAR INFINIX" o similar.
+4. Siempre elige el producto más cercano del catálogo. Si hay duda, elige el de marca similar.
+5. Solo usa producto_id = null si realmente ningún producto del catálogo se relaciona.
+6. Respeta cantidades y precios originales (NO los modifiques).
+7. Responde ÚNICAMENTE con un array JSON válido. Sin markdown, sin texto adicional.
 
 Formato de respuesta:
 [
   {{
     "numero_linea": "1",
-    "descripcion_original": "texto de la factura",
+    "descripcion_original": "texto original de la factura",
     "producto_id": 123,
-    "producto_nombre": "Nombre en Odoo",
+    "producto_nombre": "Nombre exacto en Odoo",
     "codigo_producto": "REF-001",
     "cantidad": 10.0,
     "precio_unitario": 15000.0,
     "confianza": 0.95,
-    "razon": "La descripción coincide con el producto X en el catálogo Odoo"
+    "razon": "Coincidencia por marca y nombre principal: CELULAR INFINIX"
   }}
 ]
 
-Líneas de la factura:
+Líneas de la factura (con descripción normalizada):
 {lineas_json}
 
-Catálogo de productos Odoo:
+Catálogo de productos Odoo (pre-seleccionados como candidatos):
 {catalogo_json}"""
 
 
-def _lines_hash(line_items: list) -> str:
-    """Hash único del contenido de las líneas para cache."""
+def _lines_hash(line_items: list, odoo_products: list) -> str:
     raw = json.dumps(line_items, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(raw.encode()).hexdigest()
+    cat = json.dumps(odoo_products, sort_keys=True, ensure_ascii=False)
+    combined = f"{raw}|{cat}|v{ALGORITHM_VERSION}"
+    return hashlib.sha256(combined.encode()).hexdigest()
 
 
 def _check_cache(cursor, line_hash: str) -> list:
-    """Busca en product_mapping_cache por hash. Retorna lista o None."""
     cursor.execute(
         "SELECT resultado_json FROM product_mapping_cache WHERE line_hash = %s",
         (line_hash,)
@@ -73,14 +257,14 @@ def _check_cache(cursor, line_hash: str) -> list:
     row = cursor.fetchone()
     if row:
         try:
-            return json.loads(row["resultado_json"])
+            raw = row["resultado_json"]
+            return json.loads(raw) if isinstance(raw, str) else raw
         except (json.JSONDecodeError, TypeError):
             return None
     return None
 
 
 def _save_cache(cursor, line_hash: str, line_items: list, odoo_products: list, resultado: list):
-    """Guarda el resultado en cache."""
     cursor.execute("""
         INSERT INTO product_mapping_cache (line_hash, line_items_json, catalogo_json, resultado_json)
         VALUES (%s, %s, %s, %s)
@@ -93,80 +277,28 @@ def _save_cache(cursor, line_hash: str, line_items: list, odoo_products: list, r
     ))
 
 
-def _fuzzy_match_line(desc: str, odoo_products: list, threshold: int = 40) -> dict:
-    """
-    Fuzzy matching local para cuando Groq falla o no encuentra match.
-    Compara la descripción de la línea contra nombre y default_code
-    de cada producto Odoo usando token set ratio + partial ratio.
-
-    Retorna dict con producto_id, producto_nombre, confianza (0-1).
-    Si no hay match sobre threshold, retorta confianza 0.
-    """
-    if not desc or not odoo_products:
-        return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
-
-    try:
-        from thefuzz import fuzz, process
-    except ImportError:
-        return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
-
-    desc_lower = desc.lower().strip()
-    # Construir candidatos: (nombre, default_code, id)
-    candidates = []
-    for p in odoo_products:
-        name = (p.get("name") or "").lower().strip()
-        code = (p.get("default_code") or "").lower().strip()
-        candidates.append((name, code, p["id"], p.get("name", "")))
-
-    best_score = 0
-    best_pid = None
-    best_pname = None
-
-    for name, code, pid, pname in candidates:
-        # Token set ratio sobre el nombre
-        score_name = fuzz.token_set_ratio(desc_lower, name)
-        # Partial ratio si hay código
-        score_code = fuzz.partial_ratio(desc_lower, code) if code else 0
-        # También probar el ratio directo
-        score_direct = fuzz.ratio(desc_lower, name)
-
-        score = max(score_name, score_code, score_direct)
-
-        # Bonus si el código está contenido en la descripción
-        if code and code in desc_lower:
-            score = max(score, 85)
-
-        if score > best_score:
-            best_score = score
-            best_pid = pid
-            best_pname = pname
-
-    if best_score >= threshold:
-        return {
-            "producto_id": best_pid,
-            "producto_nombre": best_pname,
-            "confianza": round(best_score / 100.0, 2),
-        }
-
-    return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
-
-
 def _run_fuzzy_fallback(line_items: list, odoo_products: list) -> list:
-    """Ejecuta fuzzy matching sobre todas las líneas. Retorna lista de sugerencias."""
     resultado = []
     for i, line in enumerate(line_items):
-        desc = line.get("descripcion_original") or line.get("descripcion", "")
-        match = _fuzzy_match_line(desc, odoo_products)
+        raw_desc = line.get("descripcion_original") or line.get("descripcion", "")
+        norm_desc = _normalize_desc(raw_desc)
+        match = _fuzzy_match_line(raw_desc, norm_desc, odoo_products)
+        razon = (
+            f"Fuzzy match local: {match['confianza']*100:.0f}% con '{match['producto_nombre']}'"
+            if match["confianza"] > 0
+            else "Sin coincidencia en catálogo Odoo"
+        )
+        print(f"[purchase_parser] FUZZY | orig='{raw_desc}' norm='{norm_desc}' → pid={match['producto_id']} conf={match['confianza']}")
         resultado.append({
             "numero_linea": line.get("numero", str(i)),
-            "descripcion_original": desc,
+            "descripcion_original": raw_desc,
             "producto_id": match["producto_id"],
             "producto_nombre": match["producto_nombre"],
             "codigo_producto": line.get("codigo_producto", ""),
             "cantidad": line.get("cantidad", 0),
             "precio_unitario": line.get("precio_unitario", 0),
             "confianza": match["confianza"],
-            "razon": f"Fuzzy match local: {match['confianza']*100:.0f}% similitud con '{match['producto_nombre'] or 'ninguno'}'" if match["confianza"] > 0 else "Sin coincidencia en catálogo Odoo",
+            "razon": razon,
         })
     return resultado
 
@@ -177,19 +309,11 @@ def map_lines_to_odoo(
     groq_api_key: str,
     db_cursor=None,
 ) -> list:
-    """
-    Mapea líneas de factura a productos Odoo usando Groq.
-    Si recibe db_cursor, consulta/guarda cache automáticamente.
-
-    Retorna lista de dicts:
-      [{numero_linea, descripcion_original, producto_id, producto_nombre,
-        codigo_producto, cantidad, precio_unitario, confianza}]
-    """
     if not line_items:
         return []
 
     if not odoo_products:
-        # Sin catálogo Odoo, devolver líneas sin mapeo
+        print("[purchase_parser] Catálogo Odoo vacío — retornando líneas sin mapeo")
         return [
             {
                 "numero_linea": it.get("numero", str(i)),
@@ -200,19 +324,35 @@ def map_lines_to_odoo(
                 "cantidad": it.get("cantidad", 0),
                 "precio_unitario": it.get("precio_unitario", 0),
                 "confianza": 0.0,
+                "razon": "Catálogo Odoo vacío",
             }
             for i, it in enumerate(line_items)
         ]
 
-    line_hash = _lines_hash(line_items)
+    line_hash = _lines_hash(line_items, odoo_products)
 
-    # Cache hit
     if db_cursor:
         cached = _check_cache(db_cursor, line_hash)
         if cached is not None:
+            print(f"[purchase_parser] CACHE HIT v{ALGORITHM_VERSION} — {len(cached)} líneas")
             return cached
 
-    prompt = _build_prompt(line_items, odoo_products)
+    print(f"[purchase_parser] v{ALGORITHM_VERSION} | {len(line_items)} líneas, {len(odoo_products)} productos en catálogo")
+
+    for line in line_items:
+        raw = line.get("descripcion_original") or line.get("descripcion", "")
+        norm = _normalize_desc(raw)
+        print(f"[purchase_parser] LINE orig='{raw}' norm='{norm}'")
+
+    top_candidates = _select_top_candidates(line_items, odoo_products)
+
+    for line in line_items:
+        raw_desc = line.get("descripcion_original") or line.get("descripcion", "")
+        norm_desc = _normalize_desc(raw_desc)
+        fuzzy_pre = _fuzzy_match_line(raw_desc, norm_desc, top_candidates)
+        print(f"[purchase_parser] PRE-FUZZY '{raw_desc}' → pid={fuzzy_pre['producto_id']} conf={fuzzy_pre['confianza']}")
+
+    prompt = _build_prompt(line_items, top_candidates)
 
     try:
         response = httpx.post(
@@ -232,15 +372,13 @@ def map_lines_to_odoo(
         response.raise_for_status()
         data = response.json()
         content = data["choices"][0]["message"]["content"]
+        print(f"[purchase_parser] GROQ respuesta cruda: {content[:500]}...")
 
-        # Limpiar posible markdown
         content = content.replace("```json", "").replace("```", "").strip()
-
         resultado = json.loads(content)
         if not isinstance(resultado, list):
             resultado = []
 
-        # Asegurar campos requeridos
         for r in resultado:
             r.setdefault("numero_linea", "")
             r.setdefault("descripcion_original", "")
@@ -251,20 +389,20 @@ def map_lines_to_odoo(
             r.setdefault("precio_unitario", 0)
             r.setdefault("confianza", 0.0)
             r.setdefault("razon", "")
+            print(f"[purchase_parser] GROQ → línea={r['numero_linea']} pid={r['producto_id']} conf={r['confianza']}")
 
-        # Fuzzy fallback: para líneas que Groq dejó sin producto_id
         for r in resultado:
             if r.get("producto_id") is None:
-                fuzzy = _fuzzy_match_line(
-                    r.get("descripcion_original", ""), odoo_products
-                )
+                raw_desc = r.get("descripcion_original", "")
+                norm_desc = _normalize_desc(raw_desc)
+                fuzzy = _fuzzy_match_line(raw_desc, norm_desc, top_candidates)
                 if fuzzy["producto_id"]:
                     r["producto_id"] = fuzzy["producto_id"]
                     r["producto_nombre"] = fuzzy["producto_nombre"]
                     r["confianza"] = fuzzy["confianza"]
-                    r["razon"] = f"Groq no encontró match → Fuzzy local: {fuzzy['confianza']*100:.0f}%"
+                    r["razon"] = f"Groq sin match → Fuzzy: {fuzzy['confianza']*100:.0f}% con '{fuzzy['producto_nombre']}'"
+                    print(f"[purchase_parser] POST-FUZZY línea={r['numero_linea']} → pid={fuzzy['producto_id']} conf={fuzzy['confianza']}")
 
-        # Guardar cache
         if db_cursor:
             _save_cache(db_cursor, line_hash, line_items, odoo_products, resultado)
 
@@ -272,5 +410,4 @@ def map_lines_to_odoo(
 
     except Exception as e:
         print(f"[purchase_parser] Error llamando a Groq: {e}")
-        # Fallback: fuzzy matching local
-        return _run_fuzzy_fallback(line_items, odoo_products)
+        return _run_fuzzy_fallback(line_items, top_candidates)
