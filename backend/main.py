@@ -757,10 +757,20 @@ async def purchase_ai_map(
             meta = json.loads(doc["xml_metadata"] or "{}")
             line_items = meta.get("line_items", [])
         except (json.JSONDecodeError, TypeError):
+            meta = {}
             line_items = []
 
+        # Fallback: si el doc se insertó antes de que existiera line_items,
+        # crear una línea virtual a partir del total
         if not line_items:
-            raise HTTPException(status_code=400, detail="El documento no tiene líneas de detalle para mapear.")
+            line_items = [{
+                "numero": "1",
+                "descripcion": doc.get("supplier_name") or meta.get("supplier_name", "Sin descripción"),
+                "codigo_producto": "",
+                "cantidad": 1,
+                "precio_unitario": float(doc.get("total_amount", 0) or 0),
+                "total": float(doc.get("total_amount", 0) or 0),
+            }]
 
         # 3. Conectar a Odoo y obtener catálogo de productos
         manager = CredentialManager()
