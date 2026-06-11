@@ -315,26 +315,51 @@ class OdooConnector:
     def search_partner_by_vat(self, vat: str) -> Optional[Dict[str, Any]]:
         """
         Busca un proveedor en Odoo por su NIT (campo 'vat').
-        Retorna el primer resultado o None.
+        Maneja casos donde el NIT de la factura no incluye el DV
+        (dígito de verificación) que Odoo sí almacena.
+
+        Estrategia:
+          1. Coincidencia exacta en 'vat'
+          2. Coincidencia parcial (ilike) con la parte numérica sin DV
+          3. Coincidencia por dígitos puros (sin puntuación ni DV)
         """
         if not self._uid:
             self.authenticate()
         models = self._get_models_proxy()
 
-        domain = [("vat", "=", vat)]
+        # Extraer solo dígitos del NIT recibido
+        numeric_vat = re.sub(r"[^0-9]", "", vat)
+
+        # 1. Exact match
+        for attempt_vat in (vat, numeric_vat):
+            partner_ids = models.execute_kw(
+                self.database, self._uid, self.api_key,
+                "res.partner", "search",
+                [[("vat", "=", attempt_vat)]],
+                {"limit": 1}
+            )
+            if partner_ids:
+                return self._read_partner(models, partner_ids[0])
+
+        # 2. Fallback: ilike con el NIT numérico (sin DV)
+        #    Ej: "890903995" matchea "890903995-8", "890.903.995-8", etc.
         partner_ids = models.execute_kw(
             self.database, self._uid, self.api_key,
             "res.partner", "search",
-            [domain],
+            [[("vat", "ilike", numeric_vat)]],
             {"limit": 1}
         )
-        if not partner_ids:
-            return None
+        if partner_ids:
+            return self._read_partner(models, partner_ids[0])
 
+        return None
+
+    def _read_partner(self, models, partner_id: int) -> Optional[Dict[str, Any]]:
+        """Helper: lee un partner por ID y retorna dict o None."""
         partners = models.execute_kw(
             self.database, self._uid, self.api_key,
             "res.partner", "read",
-            [partner_ids],
+            [partner_id],
             {"fields": ["id", "name", "vat", "street", "city", "phone", "email"]}
         )
         return partners[0] if partners else None

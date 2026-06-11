@@ -182,11 +182,12 @@ function renderDetailLines(docId) {
       <tr style="border-bottom:1px solid var(--border);">
         <th style="padding:4px 8px; text-align:left;">#</th>
         <th style="padding:4px 8px; text-align:left;">DESCRIPCIÓN</th>
-        <th style="padding:4px 8px; text-align:left;">PRODUCTO</th>
+        <th style="padding:4px 8px; text-align:left;">PRODUCTO SUGERIDO</th>
         <th style="padding:4px 8px; text-align:right;">CTD</th>
         <th style="padding:4px 8px; text-align:right;">PRECIO</th>
         <th style="padding:4px 8px; text-align:right;">TOTAL</th>
         <th style="padding:4px 8px; text-align:center;">CONF.</th>
+        <th style="padding:4px 8px; text-align:left;">RAZÓN</th>
       </tr>
     </thead>
     <tbody>`;
@@ -202,6 +203,7 @@ function renderDetailLines(docId) {
       <td style="padding:4px 8px; text-align:right;">${(l.precio_unitario || 0).toLocaleString()}</td>
       <td style="padding:4px 8px; text-align:right;">${(l.total || l.cantidad * l.precio_unitario || 0).toLocaleString()}</td>
       <td style="padding:4px 8px; text-align:center; color:${colorConf};">${confianza}</td>
+      <td style="padding:4px 8px; color:var(--text-dim); font-size:0.55rem;">${l.razon || ""}</td>
     </tr>`;
   });
 

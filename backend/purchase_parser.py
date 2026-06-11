@@ -28,8 +28,9 @@ Tu tarea es mapear cada línea de una factura electrónica (XML UBL 2.1) al prod
 más similar en el catálogo de Odoo.
 
 Reglas:
-1. Compára la descripción de cada línea contra el nombre y código del producto en Odoo.
-2. Si no hay coincidencia clara (< 60% de confianza), usa producto_id = null.
+1. Compara la descripción de cada línea contra el nombre y código del producto en Odoo.
+2. Siempre elige el producto más parecido del catálogo, incluso con baja confianza.
+   Si absolutamente ningún producto se acerca, usa producto_id = null.
 3. Respeta cantidades y precios originales de la factura (NO los modifiques).
 4. Responde ÚNICAMENTE con un array JSON válido. Sin markdown, sin texto adicional.
 
@@ -43,7 +44,8 @@ Formato de respuesta:
     "codigo_producto": "REF-001",
     "cantidad": 10.0,
     "precio_unitario": 15000.0,
-    "confianza": 0.95
+    "confianza": 0.95,
+    "razon": "La descripción coincide con el producto X en el catálogo Odoo"
   }}
 ]
 
@@ -168,6 +170,7 @@ def map_lines_to_odoo(
             r.setdefault("cantidad", 0)
             r.setdefault("precio_unitario", 0)
             r.setdefault("confianza", 0.0)
+            r.setdefault("razon", "")
 
         # Guardar cache
         if db_cursor:
