@@ -476,6 +476,8 @@ def ensure_purchase_tables():
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             )
         """)
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_review_doc_unique ON purchase_review(doc_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_purchase_review_status ON purchase_review(status)")
         db.commit()
         print("[startup] Tablas purchase_review / product_mapping_cache aseguradas.")
     except Exception as e:
