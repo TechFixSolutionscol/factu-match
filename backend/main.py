@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 import os
 import io
 import json
+import re
 import httpx
 import hashlib
 import asyncio
@@ -648,10 +649,10 @@ async def purchase_pending(limit: int = 50, offset: int = 0):
 
         cursor.execute("""
             SELECT ed.*, pr.id as review_id, pr.status as review_status,
-                   pr.ai_suggestions, pr.manual_lines
+                   pr.ai_suggestions, pr.manual_lines, pr.purchase_order_id
             FROM electronic_documents ed
             LEFT JOIN purchase_review pr ON pr.doc_id = ed.id
-            WHERE pr.id IS NULL OR pr.status = 'PENDING'
+            WHERE pr.id IS NULL OR pr.status IN ('PENDING', 'REVIEWED_OK', 'CORRECTED')
             ORDER BY ed.issue_date DESC
             LIMIT %s OFFSET %s
         """, (limit, offset))
@@ -660,7 +661,7 @@ async def purchase_pending(limit: int = 50, offset: int = 0):
         cursor.execute("""
             SELECT COUNT(*) as total FROM electronic_documents ed
             LEFT JOIN purchase_review pr ON pr.doc_id = ed.id
-            WHERE pr.id IS NULL OR pr.status = 'PENDING'
+            WHERE pr.id IS NULL OR pr.status IN ('PENDING', 'REVIEWED_OK', 'CORRECTED')
         """)
         total = cursor.fetchone()["total"]
 
@@ -855,6 +856,144 @@ async def purchase_review(
         if db:
             db.rollback()
         raise HTTPException(status_code=500, detail=f"Error guardando revisión: {str(e)}")
+    finally:
+        if db:
+            db.close()
+
+
+@app.post("/api/purchase/create-oc")
+async def purchase_create_oc(
+    doc_id: int = Form(...),
+    credentials: str = Form(...),
+    action: str = Form("create"),  # "create" | "create_and_confirm"
+):
+    """
+    Crea una Orden de Compra en Odoo a partir de un documento revisado.
+    Requiere que el documento tenga status REVIEWED_OK o CORRECTED.
+    """
+    if action not in ("create", "create_and_confirm"):
+        raise HTTPException(status_code=400, detail="action debe ser 'create' o 'create_and_confirm'.")
+
+    db = None
+    try:
+        db = connect_db()
+        cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # 1. Leer documento + purchase_review
+        cursor.execute("""
+            SELECT ed.*, pr.id as review_id, pr.status as review_status,
+                   pr.ai_suggestions, pr.manual_lines, pr.purchase_order_id
+            FROM electronic_documents ed
+            JOIN purchase_review pr ON pr.doc_id = ed.id
+            WHERE ed.id = %s
+        """, (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Documento no encontrado en purchase_review.")
+
+        if doc["review_status"] not in ("REVIEWED_OK", "CORRECTED"):
+            raise HTTPException(status_code=400, detail=f"Estado inválido: {doc['review_status']}. Debe ser REVIEWED_OK o CORRECTED.")
+
+        if doc.get("purchase_order_id"):
+            raise HTTPException(status_code=409, detail=f"Ya existe una OC asociada: {doc['purchase_order_id']}.")
+
+        # 2. Obtener líneas finales (manual_lines si CORRECTED, sino ai_suggestions)
+        if doc["review_status"] == "CORRECTED" and doc.get("manual_lines"):
+            lines = doc["manual_lines"]
+        elif doc.get("ai_suggestions"):
+            lines = doc["ai_suggestions"]
+        else:
+            # Fallback a line_items del xml_metadata
+            try:
+                meta = json.loads(doc.get("xml_metadata") or "{}")
+                lines = meta.get("line_items", [])
+            except (json.JSONDecodeError, TypeError):
+                lines = []
+        if not lines:
+            raise HTTPException(status_code=400, detail="No hay líneas de detalle para crear la OC.")
+
+        # 3. Extraer NIT del proveedor desde el documento
+        try:
+            meta = json.loads(doc.get("xml_metadata") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        supplier_nit = doc.get("supplier_nit") or meta.get("supplier_nit", "")
+        supplier_nit_clean = re.sub(r"[^0-9]", "", supplier_nit)
+        supplier_name = doc.get("supplier_name") or meta.get("supplier_name", "Proveedor")
+        doc_number = doc.get("document_number", "")
+        if not supplier_nit_clean:
+            raise HTTPException(status_code=400, detail="No se pudo determinar el NIT del proveedor.")
+
+        # 4. Conectar a Odoo y buscar proveedor
+        manager = CredentialManager()
+        creds = manager.decrypt(credentials)
+
+        connector = OdooConnector(
+            url=creds["url"],
+            database=creds["database"],
+            username=creds["username"],
+            api_key=creds["api_key"],
+        )
+
+        partner = connector.search_partner_by_vat(supplier_nit_clean)
+        if not partner:
+            raise HTTPException(status_code=404, detail=f"Proveedor con NIT {supplier_nit_clean} no encontrado en Odoo.")
+
+        # 5. Preparar líneas para Odoo
+        oc_lines = []
+        for line in lines:
+            oc_lines.append({
+                "producto_id": line.get("producto_id"),
+                "cantidad": line.get("cantidad", 1),
+                "precio_unitario": line.get("precio_unitario", 0),
+                "nombre": line.get("producto_nombre") or line.get("descripcion_original") or line.get("descripcion", ""),
+            })
+
+        # 6. Crear OC
+        reference = f"FACTUMATCH-{doc_number}" if doc_number else f"FACTUMATCH-{doc_id}"
+        order = connector.create_purchase_order(
+            partner_id=partner["id"],
+            lines=oc_lines,
+            reference=reference,
+        )
+
+        # 7. Confirmar si se solicita
+        state = order.get("state", "draft")
+        if action == "create_and_confirm":
+            confirmed = connector.confirm_purchase_order(order["id"])
+            state = confirmed.get("state", state)
+
+        # 8. Guardar en BD
+        order_ref = f"{order.get('name', '')} (ID: {order['id']})"
+        cursor.execute("""
+            UPDATE purchase_review
+            SET status = 'COMPLETED',
+                purchase_order_id = %s,
+                confirmed_at = NOW()
+            WHERE doc_id = %s
+        """, (order_ref, doc_id))
+        db.commit()
+
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "purchase_order_id": order["id"],
+            "purchase_order_name": order.get("name", ""),
+            "partner_name": partner.get("name", ""),
+            "total_lineas": len(oc_lines),
+            "state": state,
+            "message": f"OC {order.get('name', '')} creada exitosamente." +
+                      (" Confirmada." if action == "create_and_confirm" else " En estado borrador.")
+        }
+
+    except HTTPException:
+        if db:
+            db.rollback()
+        raise
+    except Exception as e:
+        if db:
+            db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error creando OC: {str(e)}")
     finally:
         if db:
             db.close()

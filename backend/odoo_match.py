@@ -310,6 +310,130 @@ class OdooConnector:
             {"fields": ["id", "name", "default_code", "list_price", "type"]}
         )
 
+    # ── Búsqueda de proveedor por NIT ──
+
+    def search_partner_by_vat(self, vat: str) -> Optional[Dict[str, Any]]:
+        """
+        Busca un proveedor en Odoo por su NIT (campo 'vat').
+        Retorna el primer resultado o None.
+        """
+        if not self._uid:
+            self.authenticate()
+        models = self._get_models_proxy()
+
+        domain = [("vat", "=", vat)]
+        partner_ids = models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "res.partner", "search",
+            [domain],
+            {"limit": 1}
+        )
+        if not partner_ids:
+            return None
+
+        partners = models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "res.partner", "read",
+            [partner_ids],
+            {"fields": ["id", "name", "vat", "street", "city", "phone", "email"]}
+        )
+        return partners[0] if partners else None
+
+    # ── Creación de Orden de Compra ──
+
+    def create_purchase_order(
+        self,
+        partner_id: int,
+        lines: List[Dict[str, Any]],
+        date_planned: str = "",
+        reference: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Crea una orden de compra (purchase.order) en Odoo con sus líneas.
+
+        Parámetros:
+          partner_id: ID del proveedor en Odoo (res.partner)
+          lines: lista de dicts con:
+              - producto_id: int (ID en product.product)
+              - cantidad: float
+              - precio_unitario: float
+              - nombre: str (descripción de la línea)
+          date_planned: str fecha YYYY-MM-DD (default: hoy + 7 días)
+          reference: str referencia interna (número de factura)
+
+        Retorna dict con id y name de la orden creada.
+        """
+        if not self._uid:
+            self.authenticate()
+        models = self._get_models_proxy()
+
+        from datetime import datetime, timedelta
+        planned = date_planned or (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+
+        # Construir order_lines con el formato Odoo (0, 0, valores)
+        order_lines = []
+        for i, line in enumerate(lines):
+            vals = {
+                "product_id": line.get("producto_id", False),
+                "product_qty": float(line.get("cantidad", 1)),
+                "price_unit": float(line.get("precio_unitario", 0)),
+                "name": line.get("nombre") or line.get("descripcion_original", ""),
+                "date_planned": planned,
+            }
+            order_lines.append((0, 0, vals))
+
+        order_vals = {
+            "partner_id": partner_id,
+            "date_order": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "date_planned": planned,
+            "order_line": order_lines,
+            "currency_id": 1,  # COP / USD — se ajusta según Odoo
+        }
+        if reference:
+            order_vals["origin"] = reference
+            order_vals["client_order_ref"] = reference
+
+        order_id = models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "purchase.order", "create",
+            [order_vals]
+        )
+
+        # Leer la orden creada para retornar datos
+        result = models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "purchase.order", "read",
+            [order_id],
+            {"fields": ["id", "name", "state", "partner_id", "amount_total"]}
+        )
+        return result[0] if result else {"id": order_id}
+
+    # ── Confirmar Orden de Compra ──
+
+    def confirm_purchase_order(self, order_id: int) -> Dict[str, Any]:
+        """
+        Confirma (button_confirm) una orden de compra en Odoo.
+        Retorna el estado actualizado.
+        """
+        if not self._uid:
+            self.authenticate()
+        models = self._get_models_proxy()
+
+        # button_confirm es un método del modelo purchase.order en Odoo
+        models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "purchase.order", "button_confirm",
+            [[order_id]]
+        )
+
+        result = models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "purchase.order", "read",
+            [order_id],
+            {"fields": ["id", "name", "state"]}
+        )
+        return result[0] if result else {"id": order_id, "state": "unknown"}
+
     # ── Helpers internos ──
 
     def _get_models_proxy(self) -> xmlrpc.client.ServerProxy:
