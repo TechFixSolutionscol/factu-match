@@ -7,7 +7,7 @@ DROP TABLE IF EXISTS purchase_review CASCADE;
 CREATE TABLE purchase_review (
     id SERIAL PRIMARY KEY,
     doc_id UUID NOT NULL,
-    company_id UUID NOT NULL,
+    company_id VARCHAR(64) NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
     ai_suggestions JSONB,
     manual_lines JSONB,

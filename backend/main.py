@@ -455,7 +455,7 @@ def ensure_purchase_tables():
             CREATE TABLE purchase_review (
                 id SERIAL PRIMARY KEY,
                 doc_id UUID NOT NULL,
-                company_id UUID NOT NULL,
+                company_id VARCHAR(64) NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
                 ai_suggestions JSONB,
                 manual_lines JSONB,
@@ -799,7 +799,7 @@ async def purchase_ai_map(
             VALUES (%s, %s, 'PENDING', %s::jsonb)
             ON CONFLICT (doc_id)
             DO UPDATE SET ai_suggestions = EXCLUDED.ai_suggestions, status = 'PENDING'
-        """, (doc_id, doc["company_id"], json.dumps(sugerencias, ensure_ascii=False)))
+        """, (doc_id, str(doc["company_id"]), json.dumps(sugerencias, ensure_ascii=False)))
         db.commit()
 
         return {
