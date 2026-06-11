@@ -668,15 +668,28 @@ async def purchase_pending(limit: int = 50, offset: int = 0):
         """)
         total = cursor.fetchone()["total"]
 
-        # Parsear xml_metadata para incluir line_items en cada doc
+        # Parsear xml_metadata y JSONB columns (vienen como string crudo)
         resultados = []
         for d in docs:
             row = dict(d)
+            # xml_metadata
             try:
                 meta = json.loads(row.get("xml_metadata") or "{}")
                 row["line_items"] = meta.get("line_items", [])
             except (json.JSONDecodeError, TypeError):
                 row["line_items"] = []
+            # ai_suggestions (JSONB → string crudo)
+            try:
+                raw = row.get("ai_suggestions")
+                row["ai_suggestions"] = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                row["ai_suggestions"] = None
+            # manual_lines (JSONB → string crudo)
+            try:
+                raw = row.get("manual_lines")
+                row["manual_lines"] = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                row["manual_lines"] = None
             resultados.append(row)
 
         return {
@@ -874,6 +887,30 @@ async def purchase_review(
             db.close()
 
 
+@app.post("/api/purchase/search-products")
+async def purchase_search_products(
+    query: str = Form(""),
+    credentials: str = Form(...),
+    limit: int = Form(50),
+):
+    """
+    Busca productos en Odoo por nombre o código (autocomplete para el modal).
+    """
+    try:
+        manager = CredentialManager()
+        creds = manager.decrypt(credentials)
+        connector = OdooConnector(
+            url=creds["url"],
+            database=creds["database"],
+            username=creds["username"],
+            api_key=creds["api_key"],
+        )
+        products = connector.search_products(query=query, limit=limit)
+        return {"success": True, "products": products, "total": len(products)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error buscando productos: {str(e)}")
+
+
 @app.post("/api/purchase/create-oc")
 async def purchase_create_oc(
     doc_id: str = Form(...),
@@ -911,11 +948,19 @@ async def purchase_create_oc(
             raise HTTPException(status_code=409, detail=f"Ya existe una OC asociada: {doc['purchase_order_id']}.")
 
         # 2. Obtener líneas finales (manual_lines si CORRECTED, sino ai_suggestions)
-        if doc["review_status"] == "CORRECTED" and doc.get("manual_lines"):
-            lines = doc["manual_lines"]
-        elif doc.get("ai_suggestions"):
-            lines = doc["ai_suggestions"]
-        else:
+        #    JSONB columns retornan como string — parsear con json.loads
+        lines = []
+        try:
+            if doc["review_status"] == "CORRECTED" and doc.get("manual_lines"):
+                raw = doc["manual_lines"]
+                lines = json.loads(raw) if isinstance(raw, str) else raw
+            elif doc.get("ai_suggestions"):
+                raw = doc["ai_suggestions"]
+                lines = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            lines = []
+
+        if not lines:
             # Fallback a line_items del xml_metadata
             try:
                 meta = json.loads(doc.get("xml_metadata") or "{}")

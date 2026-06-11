@@ -283,14 +283,24 @@ function openCorrectionModal(docId) {
   lines.forEach((l, i) => {
     const tr = document.createElement("tr");
     tr.style.borderBottom = "1px solid var(--border)";
+    tr.dataset.idx = i;
+    const prodName = l.producto_nombre || l.codigo_producto || "";
+    const prodId = l.producto_id || "";
     tr.innerHTML = `
       <td style="padding:6px;">${l.numero_linea || l.numero || (i+1)}</td>
       <td style="padding:6px; color:var(--text-dim);">${l.descripcion_original || l.descripcion || "—"}</td>
-      <td style="padding:6px;">
-        <input type="text" class="login-input modal-product-input" data-idx="${i}"
-          value="${l.producto_nombre || l.codigo_producto || ""}"
-          style="width:100%; font-size:0.6rem; padding:3px 6px; height:auto;"
-          placeholder="Nombre o código producto Odoo" />
+      <td style="padding:6px; position:relative;">
+        <input type="hidden" class="modal-pid-input" data-idx="${i}" value="${prodId}" />
+        <div style="display:flex; gap:3px; align-items:center;">
+          <input type="text" class="login-input modal-product-input" data-idx="${i}"
+            value="${prodName}"
+            style="flex:1; font-size:0.6rem; padding:3px 6px; height:auto; min-width:80px;"
+            placeholder="Buscar producto Odoo..."
+            autocomplete="off" />
+          <button type="button" class="btn btn-outline" onclick="searchOdooProducts(${i})"
+            style="padding:2px 6px; font-size:0.5rem;" title="Buscar en Odoo">🔍</button>
+        </div>
+        <div class="modal-search-results" data-idx="${i}" style="display:none; position:absolute; top:100%; left:0; right:0; background:var(--bg-card); border:1px solid var(--border); border-radius:4px; max-height:150px; overflow-y:auto; z-index:10; font-size:0.55rem;"></div>
       </td>
       <td style="padding:6px;">
         <input type="number" step="0.01" class="login-input modal-qty-input" data-idx="${i}"
@@ -314,10 +324,79 @@ function closeModal() {
   document.getElementById("purchase-modal-overlay").style.display = "none";
 }
 
+// ── Buscar productos Odoo (autocomplete modal) ──
+
+async function searchOdooProducts(idx) {
+  if (!odooCredentials) {
+    alert("❌ No hay credenciales Odoo. Configúralas primero.");
+    return;
+  }
+  const input = document.querySelector(`.modal-product-input[data-idx="${idx}"]`);
+  const resultsDiv = document.querySelector(`.modal-search-results[data-idx="${idx}"]`);
+  if (!input || !resultsDiv) return;
+
+  const query = input.value.trim();
+  if (!query || query.length < 2) {
+    resultsDiv.innerHTML = '<div style="padding:4px 8px; color:var(--text-dim);">Escribe al menos 2 caracteres</div>';
+    resultsDiv.style.display = "block";
+    return;
+  }
+
+  resultsDiv.innerHTML = '<div style="padding:4px 8px; color:var(--text-dim);">Buscando...</div>';
+  resultsDiv.style.display = "block";
+
+  try {
+    const formData = new FormData();
+    formData.append("query", query);
+    formData.append("credentials", odooCredentials);
+    formData.append("limit", "20");
+
+    const res = await fetch(`${API_URL}/api/purchase/search-products`, {
+      method: "POST",
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Error");
+
+    if (!data.products || data.products.length === 0) {
+      resultsDiv.innerHTML = '<div style="padding:4px 8px; color:var(--text-dim);">Sin resultados</div>';
+      return;
+    }
+
+    resultsDiv.innerHTML = data.products.map(p => {
+      const code = p.default_code ? ` [${p.default_code}]` : "";
+      return `<div class="search-result-item" data-id="${p.id}" data-name="${p.name}"
+        style="padding:3px 8px; cursor:pointer; border-bottom:1px solid var(--border);"
+        onclick="selectProduct(${idx}, ${p.id}, '${p.name.replace(/'/g, "\\'")}')">
+        ${p.name}${code}
+      </div>`;
+    }).join("");
+  } catch (err) {
+    resultsDiv.innerHTML = `<div style="padding:4px 8px; color:var(--red);">Error: ${err.message}</div>`;
+  }
+}
+
+function selectProduct(idx, pid, pname) {
+  const input = document.querySelector(`.modal-product-input[data-idx="${idx}"]`);
+  const hidden = document.querySelector(`.modal-pid-input[data-idx="${idx}"]`);
+  const resultsDiv = document.querySelector(`.modal-search-results[data-idx="${idx}"]`);
+  if (input) input.value = pname;
+  if (hidden) hidden.value = pid;
+  if (resultsDiv) resultsDiv.style.display = "none";
+}
+
+// Cerrar resultados al hacer clic fuera
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".modal-search-results") && !e.target.closest(".modal-product-input") && !e.target.closest("[onclick*='searchOdooProducts']")) {
+    document.querySelectorAll(".modal-search-results").forEach(el => el.style.display = "none");
+  }
+});
+
 async function saveCorrections() {
   if (!currentModalDocId) return;
 
   const productInputs = document.querySelectorAll(".modal-product-input");
+  const pidInputs = document.querySelectorAll(".modal-pid-input");
   const qtyInputs = document.querySelectorAll(".modal-qty-input");
   const priceInputs = document.querySelectorAll(".modal-price-input");
 
@@ -325,6 +404,7 @@ async function saveCorrections() {
   productInputs.forEach((input, i) => {
     manualLines.push({
       numero_linea: String(i + 1),
+      producto_id: parseInt(pidInputs[i]?.value) || null,
       producto_nombre: input.value.trim(),
       cantidad: parseFloat(qtyInputs[i]?.value) || 0,
       precio_unitario: parseFloat(priceInputs[i]?.value) || 0,

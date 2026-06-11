@@ -6,6 +6,7 @@ Flujo:
   2. Construye prompt y llama a Groq
   3. Groq devuelve JSON con producto_id, nombre, confianza
   4. Resultado se cachea en product_mapping_cache (Neon) para no repetir
+  5. Si Groq falla o no encuentra match, usa fuzzy matching local (thefuzz)
 """
 
 import json
@@ -13,6 +14,7 @@ import hashlib
 import httpx
 import psycopg2
 import psycopg2.extras
+import re
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -89,6 +91,84 @@ def _save_cache(cursor, line_hash: str, line_items: list, odoo_products: list, r
         json.dumps(odoo_products, ensure_ascii=False),
         json.dumps(resultado, ensure_ascii=False),
     ))
+
+
+def _fuzzy_match_line(desc: str, odoo_products: list, threshold: int = 40) -> dict:
+    """
+    Fuzzy matching local para cuando Groq falla o no encuentra match.
+    Compara la descripción de la línea contra nombre y default_code
+    de cada producto Odoo usando token set ratio + partial ratio.
+
+    Retorna dict con producto_id, producto_nombre, confianza (0-1).
+    Si no hay match sobre threshold, retorta confianza 0.
+    """
+    if not desc or not odoo_products:
+        return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
+
+    try:
+        from thefuzz import fuzz, process
+    except ImportError:
+        return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
+
+    desc_lower = desc.lower().strip()
+    # Construir candidatos: (nombre, default_code, id)
+    candidates = []
+    for p in odoo_products:
+        name = (p.get("name") or "").lower().strip()
+        code = (p.get("default_code") or "").lower().strip()
+        candidates.append((name, code, p["id"], p.get("name", "")))
+
+    best_score = 0
+    best_pid = None
+    best_pname = None
+
+    for name, code, pid, pname in candidates:
+        # Token set ratio sobre el nombre
+        score_name = fuzz.token_set_ratio(desc_lower, name)
+        # Partial ratio si hay código
+        score_code = fuzz.partial_ratio(desc_lower, code) if code else 0
+        # También probar el ratio directo
+        score_direct = fuzz.ratio(desc_lower, name)
+
+        score = max(score_name, score_code, score_direct)
+
+        # Bonus si el código está contenido en la descripción
+        if code and code in desc_lower:
+            score = max(score, 85)
+
+        if score > best_score:
+            best_score = score
+            best_pid = pid
+            best_pname = pname
+
+    if best_score >= threshold:
+        return {
+            "producto_id": best_pid,
+            "producto_nombre": best_pname,
+            "confianza": round(best_score / 100.0, 2),
+        }
+
+    return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
+
+
+def _run_fuzzy_fallback(line_items: list, odoo_products: list) -> list:
+    """Ejecuta fuzzy matching sobre todas las líneas. Retorna lista de sugerencias."""
+    resultado = []
+    for i, line in enumerate(line_items):
+        desc = line.get("descripcion_original") or line.get("descripcion", "")
+        match = _fuzzy_match_line(desc, odoo_products)
+        resultado.append({
+            "numero_linea": line.get("numero", str(i)),
+            "descripcion_original": desc,
+            "producto_id": match["producto_id"],
+            "producto_nombre": match["producto_nombre"],
+            "codigo_producto": line.get("codigo_producto", ""),
+            "cantidad": line.get("cantidad", 0),
+            "precio_unitario": line.get("precio_unitario", 0),
+            "confianza": match["confianza"],
+            "razon": f"Fuzzy match local: {match['confianza']*100:.0f}% similitud con '{match['producto_nombre'] or 'ninguno'}'" if match["confianza"] > 0 else "Sin coincidencia en catálogo Odoo",
+        })
+    return resultado
 
 
 def map_lines_to_odoo(
@@ -172,6 +252,18 @@ def map_lines_to_odoo(
             r.setdefault("confianza", 0.0)
             r.setdefault("razon", "")
 
+        # Fuzzy fallback: para líneas que Groq dejó sin producto_id
+        for r in resultado:
+            if r.get("producto_id") is None:
+                fuzzy = _fuzzy_match_line(
+                    r.get("descripcion_original", ""), odoo_products
+                )
+                if fuzzy["producto_id"]:
+                    r["producto_id"] = fuzzy["producto_id"]
+                    r["producto_nombre"] = fuzzy["producto_nombre"]
+                    r["confianza"] = fuzzy["confianza"]
+                    r["razon"] = f"Groq no encontró match → Fuzzy local: {fuzzy['confianza']*100:.0f}%"
+
         # Guardar cache
         if db_cursor:
             _save_cache(db_cursor, line_hash, line_items, odoo_products, resultado)
@@ -180,17 +272,5 @@ def map_lines_to_odoo(
 
     except Exception as e:
         print(f"[purchase_parser] Error llamando a Groq: {e}")
-        # Fallback: devolver líneas sin mapeo
-        return [
-            {
-                "numero_linea": it.get("numero", str(i)),
-                "descripcion_original": it.get("descripcion", ""),
-                "producto_id": None,
-                "producto_nombre": None,
-                "codigo_producto": it.get("codigo_producto", ""),
-                "cantidad": it.get("cantidad", 0),
-                "precio_unitario": it.get("precio_unitario", 0),
-                "confianza": 0.0,
-            }
-            for i, it in enumerate(line_items)
-        ]
+        # Fallback: fuzzy matching local
+        return _run_fuzzy_fallback(line_items, odoo_products)
