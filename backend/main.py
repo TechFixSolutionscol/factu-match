@@ -14,6 +14,7 @@ from comparador import comparar_facturas, comparar_facturas_odoo, generar_excel_
 from odoo_match import OdooConnector, CredentialManager, _normalizar_clave_odoo, _normalizar_nit_odoo
 from email_parser import process_emails, connect_db
 from ai_auditor import build_odoo_context, run_ai_audit
+from purchase_parser import map_lines_to_odoo
 from datetime import datetime, timedelta
 import psycopg2.extras
 from dotenv import load_dotenv
@@ -437,6 +438,52 @@ def generar_narrativa_local(resultado: dict) -> str:
     return "\n".join(lineas)
 
 # ──────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# AUTO-MIGRACIÓN: purchase_review
+# ──────────────────────────────────────────────
+
+@app.on_event("startup")
+def ensure_purchase_tables():
+    """Crea purchase_review y product_mapping_cache si no existen (idempotente)."""
+    db = None
+    try:
+        db = connect_db()
+        cursor = db.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS purchase_review (
+                id SERIAL PRIMARY KEY,
+                doc_id INTEGER NOT NULL REFERENCES electronic_documents(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+                ai_suggestions JSONB,
+                manual_lines JSONB,
+                purchase_order_id VARCHAR(64),
+                groq_response_raw TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                reviewed_at TIMESTAMP,
+                confirmed_at TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS product_mapping_cache (
+                id SERIAL PRIMARY KEY,
+                line_hash VARCHAR(64) UNIQUE NOT NULL,
+                line_items_json TEXT NOT NULL,
+                catalogo_json TEXT,
+                resultado_json TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
+        db.commit()
+        print("[startup] Tablas purchase_review / product_mapping_cache aseguradas.")
+    except Exception as e:
+        print(f"[startup] Error creando tablas: {e}")
+    finally:
+        if db:
+            db.close()
+
+
+# ──────────────────────────────────────────────
 # ENDPOINTS RECEPCIÓN FACTURAS (IMAP/XML)
 # ──────────────────────────────────────────────
 
@@ -581,6 +628,235 @@ async def sync_odoo_invoices(credentials: str = Form(...), date_from: str = Form
         raise HTTPException(status_code=500, detail=f"Error en sincronización con Odoo: {str(e)}")
     finally:
         if 'db' in locals() and db:
+            db.close()
+
+
+# ──────────────────────────────────────────────
+# MÓDULO 1 — COMPRAS AUTOMÁTICAS DESDE CORREO
+# ──────────────────────────────────────────────
+
+@app.get("/api/purchase/pending")
+async def purchase_pending(limit: int = 50, offset: int = 0):
+    """
+    Retorna documentos electrónicos pendientes de revisión (no están en
+    purchase_review o están con status PENDING).
+    """
+    db = None
+    try:
+        db = connect_db()
+        cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("""
+            SELECT ed.*, pr.id as review_id, pr.status as review_status,
+                   pr.ai_suggestions, pr.manual_lines
+            FROM electronic_documents ed
+            LEFT JOIN purchase_review pr ON pr.doc_id = ed.id
+            WHERE pr.id IS NULL OR pr.status = 'PENDING'
+            ORDER BY ed.issue_date DESC
+            LIMIT %s OFFSET %s
+        """, (limit, offset))
+        docs = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT COUNT(*) as total FROM electronic_documents ed
+            LEFT JOIN purchase_review pr ON pr.doc_id = ed.id
+            WHERE pr.id IS NULL OR pr.status = 'PENDING'
+        """)
+        total = cursor.fetchone()["total"]
+
+        # Parsear xml_metadata para incluir line_items en cada doc
+        resultados = []
+        for d in docs:
+            row = dict(d)
+            try:
+                meta = json.loads(row.get("xml_metadata") or "{}")
+                row["line_items"] = meta.get("line_items", [])
+            except (json.JSONDecodeError, TypeError):
+                row["line_items"] = []
+            resultados.append(row)
+
+        return {
+            "success": True,
+            "pagination": {"total": total, "limit": limit, "offset": offset},
+            "documentos": resultados,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error cargando pendientes: {str(e)}")
+    finally:
+        if db:
+            db.close()
+
+
+@app.post("/api/purchase/parse-lines")
+async def purchase_parse_lines(doc_id: int = Form(...)):
+    """
+    Parsea y retorna las líneas de detalle de un documento específico.
+    """
+    db = None
+    try:
+        db = connect_db()
+        cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("SELECT id, xml_metadata FROM electronic_documents WHERE id = %s", (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Documento no encontrado.")
+
+        try:
+            meta = json.loads(doc["xml_metadata"] or "{}")
+            line_items = meta.get("line_items", [])
+        except (json.JSONDecodeError, TypeError):
+            line_items = []
+
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "line_items": line_items,
+            "total_lineas": len(line_items),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parseando líneas: {str(e)}")
+    finally:
+        if db:
+            db.close()
+
+
+@app.post("/api/purchase/ai-map")
+async def purchase_ai_map(
+    doc_id: int = Form(...),
+    credentials: str = Form(...),
+    groq_key: Optional[str] = Form(None),
+):
+    """
+    Toma un documento pendiente, extrae sus líneas, obtiene el catálogo
+    de productos desde Odoo, y usa Groq para mapear cada línea a un producto.
+    Guarda el resultado en purchase_review.ai_suggestions.
+    """
+    db = None
+    try:
+        # 1. Leer documento de BD
+        db = connect_db()
+        cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("""
+            SELECT ed.*, pr.id as review_id
+            FROM electronic_documents ed
+            LEFT JOIN purchase_review pr ON pr.doc_id = ed.id
+            WHERE ed.id = %s
+        """, (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Documento no encontrado.")
+
+        # 2. Parsear line_items del xml_metadata
+        try:
+            meta = json.loads(doc["xml_metadata"] or "{}")
+            line_items = meta.get("line_items", [])
+        except (json.JSONDecodeError, TypeError):
+            line_items = []
+
+        if not line_items:
+            raise HTTPException(status_code=400, detail="El documento no tiene líneas de detalle para mapear.")
+
+        # 3. Conectar a Odoo y obtener catálogo de productos
+        manager = CredentialManager()
+        creds = manager.decrypt(credentials)
+
+        connector = OdooConnector(
+            url=creds["url"],
+            database=creds["database"],
+            username=creds["username"],
+            api_key=creds["api_key"],
+        )
+        odoo_products = connector.search_products()
+
+        # 4. Ejecutar mapeo IA
+        api_key = groq_key or os.getenv("GROQ_API_KEY", "")
+        if not api_key:
+            raise HTTPException(status_code=400, detail="GROQ_API_KEY no configurada.")
+
+        sugerencias = map_lines_to_odoo(line_items, odoo_products, api_key, db_cursor=cursor)
+
+        # 5. Guardar en purchase_review (crear si no existe)
+        cursor.execute("""
+            INSERT INTO purchase_review (doc_id, company_id, status, ai_suggestions)
+            VALUES (%s, %s, 'PENDING', %s::jsonb)
+            ON CONFLICT (doc_id)
+            DO UPDATE SET ai_suggestions = EXCLUDED.ai_suggestions, status = 'PENDING'
+        """, (doc_id, doc["company_id"], json.dumps(sugerencias, ensure_ascii=False)))
+        db.commit()
+
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "sugerencias": sugerencias,
+            "total_lineas": len(sugerencias),
+        }
+
+    except HTTPException:
+        if db:
+            db.rollback()
+        raise
+    except Exception as e:
+        if db:
+            db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error en mapeo IA: {str(e)}")
+    finally:
+        if db:
+            db.close()
+
+
+@app.post("/api/purchase/review")
+async def purchase_review(
+    doc_id: int = Form(...),
+    action: str = Form(...),
+    manual_lines: Optional[str] = Form(None),
+):
+    """
+    Aprueba o corrige el mapeo IA de un documento.
+    action = "accept" → status = 'REVIEWED_OK'
+    action = "correct" → status = 'CORRECTED', guarda manual_lines
+    """
+    if action not in ("accept", "correct"):
+        raise HTTPException(status_code=400, detail="action debe ser 'accept' o 'correct'.")
+
+    db = None
+    try:
+        db = connect_db()
+        cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("""
+            UPDATE purchase_review
+            SET status = %s,
+                manual_lines = CASE WHEN %s THEN %s::jsonb ELSE manual_lines END,
+                reviewed_at = NOW()
+            WHERE doc_id = %s
+            RETURNING id
+        """, (
+            "REVIEWED_OK" if action == "accept" else "CORRECTED",
+            action == "correct",
+            manual_lines or "[]",
+            doc_id,
+        ))
+        updated = cursor.fetchone()
+        if not updated:
+            raise HTTPException(status_code=404, detail="No hay registro de purchase_review para este documento. Ejecuta /api/purchase/ai-map primero.")
+
+        db.commit()
+        return {"success": True, "review_id": updated["id"], "status": "REVIEWED_OK" if action == "accept" else "CORRECTED"}
+
+    except HTTPException:
+        if db:
+            db.rollback()
+        raise
+    except Exception as e:
+        if db:
+            db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error guardando revisión: {str(e)}")
+    finally:
+        if db:
             db.close()
 
 

@@ -282,6 +282,34 @@ class OdooConnector:
 
         return facturas
 
+    # ── Búsqueda de productos ──
+
+    def search_products(self, query: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Busca productos en Odoo (product.product) por nombre o código.
+        Retorna lista con id, name, default_code, price, type.
+        """
+        if not self._uid:
+            self.authenticate()
+        models = self._get_models_proxy()
+
+        domain = ["|", ("name", "ilike", query), ("default_code", "ilike", query)] if query else []
+        product_ids = models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "product.product", "search",
+            [domain],
+            {"limit": limit}
+        )
+        if not product_ids:
+            return []
+
+        return models.execute_kw(
+            self.database, self._uid, self.api_key,
+            "product.product", "read",
+            [product_ids],
+            {"fields": ["id", "name", "default_code", "list_price", "type"]}
+        )
+
     # ── Helpers internos ──
 
     def _get_models_proxy(self) -> xmlrpc.client.ServerProxy:

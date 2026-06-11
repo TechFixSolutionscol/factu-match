@@ -117,7 +117,7 @@ function initUserSession() {
   const role = currentUser.role || "Lectura";
   const isAdmin = role === "Admin";
   const isOperador = role === "Operador" || isAdmin;
-  const userModules = (currentUser.modules || "auditor,comparisons,checklist,reconciliation").split(',');
+  const userModules = (currentUser.modules || "auditor,comparisons,checklist,reconciliation,purchasing").split(',');
   
   // Ocultar módulos administrativos
   const navUsers = document.getElementById("nav-users");
@@ -138,6 +138,8 @@ function initUserSession() {
   if (navComparisons) navComparisons.style.display = userModules.includes('comparisons') ? "flex" : "none";
   if (navChecklist) navChecklist.style.display = userModules.includes('checklist') ? "flex" : "none";
   if (navReconciliation) navReconciliation.style.display = userModules.includes('reconciliation') ? "flex" : "none";
+  const navPurchasing = document.getElementById("nav-purchasing");
+  if (navPurchasing) navPurchasing.style.display = userModules.includes('purchasing') ? "flex" : "none";
 
   // Modo Solo Lectura (Deshabilitar acciones operativas)
   if (!isOperador) {
@@ -164,6 +166,11 @@ function checkSession() {
   const saved = localStorage.getItem("factura_user");
   if (saved) {
     currentUser = JSON.parse(saved);
+    // Migración: asegurar módulo purchasing en sesiones existentes
+    if (currentUser.modules && !currentUser.modules.split(',').includes('purchasing')) {
+      currentUser.modules += ',purchasing';
+      localStorage.setItem("factura_user", JSON.stringify(currentUser));
+    }
     initUserSession();
     document.getElementById("login-overlay").style.display = "none";
     log(`Sesión restaurada: ${currentUser.name}`, 'ok');
@@ -183,15 +190,15 @@ function switchView(viewId) {
   }
 
   // Verificación de acceso a Módulos pagados
-  const userModules = (currentUser?.modules || "auditor,comparisons,checklist,reconciliation").split(',');
-  const protectedModules = ['auditor', 'comparisons', 'checklist', 'reconciliation'];
+  const userModules = (currentUser?.modules || "auditor,comparisons,checklist,reconciliation,purchasing").split(',');
+  const protectedModules = ['auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing'];
   if (protectedModules.includes(viewId) && !userModules.includes(viewId)) {
     log(`MÓDULO BLOQUEADO: No tienes el módulo de ${viewId} habilitado en tu licencia.`, 'warn');
     return;
   }
 
   // Ocultar todas las vistas
-  const views = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'logs', 'users', 'config', 'profile'];
+  const views = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing', 'logs', 'users', 'config', 'profile'];
   views.forEach(v => {
     const el = document.getElementById(`view-${v}`);
     if (el) el.style.display = 'none';
@@ -202,7 +209,7 @@ function switchView(viewId) {
   if (activeView) activeView.style.display = 'block';
 
   // Remover activo de todos los nav items
-  const navs = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'logs', 'users', 'config', 'profile-btn'];
+  const navs = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing', 'logs', 'users', 'config', 'profile-btn'];
   navs.forEach(n => {
     const el = document.getElementById(`nav-${n}`);
     if (el) el.classList.remove('active');
@@ -216,6 +223,7 @@ function switchView(viewId) {
     dashboard: 'TABLERO DE CONTROL',
     comparisons: 'PROCESAMIENTO DE ARCHIVOS',
     reconciliation: 'CONCILIACIÓN BANCARIA',
+    purchasing: 'COMPRAS AUTOMÁTICAS (CORREO → ODOO)',
     checklist: 'CHECKLIST MENSUAL (AUDITOR IA)',
     logs: 'REGISTROS DEL SISTEMA',
     users: 'GESTIÓN DE USUARIOS',
@@ -235,6 +243,7 @@ document.getElementById("nav-auditor").addEventListener("click", () => switchVie
 document.getElementById("nav-comparisons").addEventListener("click", () => switchView('comparisons'));
 document.getElementById("nav-checklist").addEventListener("click", () => switchView('checklist'));
 document.getElementById("nav-reconciliation").addEventListener("click", () => switchView('reconciliation'));
+document.getElementById("nav-purchasing").addEventListener("click", () => switchView('purchasing'));
 document.getElementById("nav-logs").addEventListener("click", () => switchView('logs'));
 document.getElementById("nav-users").addEventListener("click", () => switchView('users'));
 document.getElementById("nav-profile-btn").addEventListener("click", () => switchView('profile'));
@@ -269,7 +278,7 @@ async function loadUsersTable() {
         </td>
         <td style="text-align:center;">
           <div style="font-size:0.5rem; color:var(--cyan); max-width:120px; word-wrap:break-word; margin:auto;">
-            ${(u.modules || 'auditor,comparisons,checklist,reconciliation').split(',').map(m => m.toUpperCase().substring(0,4)).join(', ')}
+            ${(u.modules || 'auditor,comparisons,checklist,reconciliation,purchasing').split(',').map(m => m.toUpperCase().substring(0,4)).join(', ')}
           </div>
           <button class="action-btn" style="font-size:0.5rem; margin:5px auto 0 auto; color:var(--text-mid); border:1px solid var(--border); padding:2px 5px; border-radius:3px;" onclick="editUserModules('${u.id}', '${u.name}', '${u.modules || 'auditor,comparisons,checklist,reconciliation'}')">⚙️ EDITAR</button>
         </td>
@@ -315,6 +324,7 @@ window.editUserModules = (id, name, currentModulesStr) => {
         <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-comparisons" ${current.includes('comparisons') ? 'checked' : ''}> Procesamiento de Archivos</label>
         <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-checklist" ${current.includes('checklist') ? 'checked' : ''}> Checklist (Auditor IA)</label>
         <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-reconciliation" ${current.includes('reconciliation') ? 'checked' : ''}> Conciliación Bancaria</label>
+        <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-purchasing" ${current.includes('purchasing') ? 'checked' : ''}> Compras Automáticas</label>
       </div>
       <button class="btn btn-cyan" id="btn-save-modules" style="width:100%; justify-content:center;">GUARDAR PERMISOS</button>
       <button class="btn btn-outline" id="btn-cancel-modules" style="width:100%; justify-content:center; margin-top:10px;">CANCELAR</button>
@@ -329,6 +339,7 @@ window.editUserModules = (id, name, currentModulesStr) => {
     if(document.getElementById('chk-comparisons').checked) selected.push('comparisons');
     if(document.getElementById('chk-checklist').checked) selected.push('checklist');
     if(document.getElementById('chk-reconciliation').checked) selected.push('reconciliation');
+    if(document.getElementById('chk-purchasing').checked) selected.push('purchasing');
     
     const modulesStr = selected.join(',');
     

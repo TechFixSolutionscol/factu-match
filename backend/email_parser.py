@@ -3,6 +3,7 @@ import email
 from email.header import decode_header
 import zipfile
 import io
+import json
 from lxml import etree
 import psycopg2
 import os
@@ -46,9 +47,43 @@ def get_text_from_xml(root, xpath_expr, default=""):
         pass
     return default
 
+def parse_invoice_lines(root) -> list:
+    """
+    Parsea las líneas de detalle de una factura UBL 2.1 (cac:InvoiceLine).
+    Retorna lista de dicts con: numero, descripcion, cantidad, precio_unitario, total, codigo_producto.
+    """
+    lineas = []
+    try:
+        invoice_lines = root.xpath("//cac:InvoiceLine", namespaces=NAMESPACES)
+        for line in invoice_lines:
+            numero = get_text_from_xml(line, "cbc:ID", "")
+            descripcion = get_text_from_xml(line, "cac:Item/cbc:Description", "")
+            cantidad_str = get_text_from_xml(line, "cbc:InvoicedQuantity", "0")
+            precio_str = get_text_from_xml(line, "cac:Price/cbc:PriceAmount", "0")
+            total_str = get_text_from_xml(line, "cbc:LineExtensionAmount", "0")
+            codigo = get_text_from_xml(line, "cac:Item/cac:SellersItemIdentification/cbc:ID", "")
+
+            cantidad = float(cantidad_str) if cantidad_str else 0
+            precio = float(precio_str) if precio_str else 0
+            total = float(total_str) if total_str else 0
+
+            if descripcion or codigo:
+                lineas.append({
+                    "numero": numero,
+                    "descripcion": descripcion,
+                    "codigo_producto": codigo,
+                    "cantidad": cantidad,
+                    "precio_unitario": precio,
+                    "total": total,
+                })
+    except Exception as e:
+        print(f"Error parseando InvoiceLine: {e}")
+    return lineas
+
+
 def parse_ubl_xml(xml_bytes):
     """
-    Parsea el XML UBL 2.1 y extrae la metadata clave.
+    Parsea el XML UBL 2.1 y extrae la metadata clave + líneas de detalle.
     """
     try:
         root = etree.fromstring(xml_bytes)
@@ -90,6 +125,13 @@ def parse_ubl_xml(xml_bytes):
         tax_amount_str = get_text_from_xml(invoice_root, "//cac:TaxTotal/cbc:TaxAmount", "0")
         total_amount_str = get_text_from_xml(invoice_root, "//cac:LegalMonetaryTotal/cbc:PayableAmount", "0")
         
+        # Líneas de detalle
+        line_items = parse_invoice_lines(invoice_root)
+        metadata = {
+            "line_items": line_items,
+            "total_lineas": len(line_items),
+        } if line_items else {"line_items": [], "total_lineas": 0}
+        
         return {
             "cufe": cufe,
             "document_number": doc_number,
@@ -101,7 +143,7 @@ def parse_ubl_xml(xml_bytes):
             "subtotal": float(subtotal_str or 0),
             "tax_amount": float(tax_amount_str or 0),
             "total_amount": float(total_amount_str or 0),
-            "xml_metadata": "{}" # Reservado para líneas de factura futuras
+            "xml_metadata": json.dumps(metadata, ensure_ascii=False)
         }
     except Exception as e:
         print(f"Error parseando XML: {e}")
