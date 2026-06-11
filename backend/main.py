@@ -15,7 +15,7 @@ from comparador import comparar_facturas, comparar_facturas_odoo, generar_excel_
 from odoo_match import OdooConnector, CredentialManager, _normalizar_clave_odoo, _normalizar_nit_odoo
 from email_parser import process_emails, connect_db
 from ai_auditor import build_odoo_context, run_ai_audit
-from purchase_parser import map_lines_to_odoo
+from purchase_parser import map_lines_to_odoo, _normalize_desc, _save_corrections_to_history
 from datetime import datetime, timedelta
 import psycopg2.extras
 from dotenv import load_dotenv
@@ -443,16 +443,26 @@ def generar_narrativa_local(resultado: dict) -> str:
 # AUTO-MIGRACIÓN: purchase_review
 # ──────────────────────────────────────────────
 
+# Cache local del catalogo Odoo (5 min TTL)
+odoo_catalog_cache = TTLCache(maxsize=32, ttl=300)
+
+
+def _get_catalog_cache_key(creds: dict) -> str:
+    raw = f"{creds['url']}|{creds['database']}|{creds['username']}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
 @app.on_event("startup")
 def ensure_purchase_tables():
-    """Crea purchase_review y product_mapping_cache si no existen (idempotente)."""
+    """Migración idempotente: crea tablas si no existen, agrega columnas faltantes."""
     db = None
     try:
         db = connect_db()
         cursor = db.cursor()
-        cursor.execute("DROP TABLE IF EXISTS purchase_review CASCADE")
+
+        # purchase_review
         cursor.execute("""
-            CREATE TABLE purchase_review (
+            CREATE TABLE IF NOT EXISTS purchase_review (
                 id SERIAL PRIMARY KEY,
                 doc_id UUID NOT NULL,
                 company_id VARCHAR(64) NOT NULL,
@@ -466,6 +476,27 @@ def ensure_purchase_tables():
                 confirmed_at TIMESTAMP
             )
         """)
+
+        # Migraciones futuras: ADD COLUMN IF NOT EXISTS
+        for col_name, col_type in [
+            ("groq_response_raw", "TEXT"),
+        ]:
+            cursor.execute(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='purchase_review' AND column_name='{col_name}'
+                    ) THEN
+                        ALTER TABLE purchase_review ADD COLUMN {col_name} {col_type};
+                    END IF;
+                END $$;
+            """)
+
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_review_doc_unique ON purchase_review(doc_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_purchase_review_status ON purchase_review(status)")
+
+        # product_mapping_cache
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS product_mapping_cache (
                 id SERIAL PRIMARY KEY,
@@ -476,12 +507,26 @@ def ensure_purchase_tables():
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             )
         """)
-        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_review_doc_unique ON purchase_review(doc_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_purchase_review_status ON purchase_review(status)")
+
+        # correction_history (aprendizaje automatico)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS correction_history (
+                id SERIAL PRIMARY KEY,
+                normalized_desc TEXT NOT NULL,
+                producto_id INTEGER NOT NULL,
+                producto_nombre TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_correction_history_desc
+            ON correction_history(normalized_desc)
+        """)
+
         db.commit()
-        print("[startup] Tablas purchase_review / product_mapping_cache aseguradas.")
+        print("[startup] Tablas aseguradas correctamente (sin DROP).")
     except Exception as e:
-        print(f"[startup] Error creando tablas: {e}")
+        print(f"[startup] Error: {e}")
     finally:
         if db:
             db.close()
@@ -787,7 +832,7 @@ async def purchase_ai_map(
                 "total": float(doc.get("total_amount", 0) or 0),
             }]
 
-        # 3. Conectar a Odoo y obtener catálogo de productos
+        # 3. Conectar a Odoo y obtener catálogo de productos (con cache local)
         manager = CredentialManager()
         creds = manager.decrypt(credentials)
 
@@ -797,7 +842,15 @@ async def purchase_ai_map(
             username=creds["username"],
             api_key=creds["api_key"],
         )
-        odoo_products = connector.search_products()
+
+        cache_key = _get_catalog_cache_key(creds)
+        if cache_key in odoo_catalog_cache:
+            odoo_products = odoo_catalog_cache[cache_key]
+            print(f"[ai-map] Cache local catalogo: {len(odoo_products)} productos")
+        else:
+            odoo_products = connector.search_products()
+            odoo_catalog_cache[cache_key] = odoo_products
+            print(f"[ai-map] Catalogo descargado de Odoo: {len(odoo_products)} productos")
 
         # 4. Ejecutar mapeo IA
         api_key = groq_key or os.getenv("GROQ_API_KEY", "")
@@ -807,6 +860,17 @@ async def purchase_ai_map(
         sugerencias = map_lines_to_odoo(line_items, odoo_products, api_key, db_cursor=cursor)
 
         # 5. Guardar en purchase_review (crear si no existe)
+        #    Verificar concurrencia: si ya existe una OC completada, no sobrescribir
+        cursor.execute("""
+            SELECT status FROM purchase_review WHERE doc_id = %s
+        """, (doc_id,))
+        existing = cursor.fetchone()
+        if existing and existing["status"] in ("COMPLETED",):
+            raise HTTPException(
+                status_code=409,
+                detail=f"El documento ya tiene una OC generada (estado: {existing['status']}). No se puede re-mapear."
+            )
+
         cursor.execute("""
             INSERT INTO purchase_review (doc_id, company_id, status, ai_suggestions)
             VALUES (%s, %s, 'PENDING', %s::jsonb)
@@ -871,6 +935,14 @@ async def purchase_review(
         if not updated:
             raise HTTPException(status_code=404, detail="No hay registro de purchase_review para este documento. Ejecuta /api/purchase/ai-map primero.")
 
+        # Si es correccion, guardar en correction_history para aprendizaje automatico
+        if action == "correct" and manual_lines:
+            try:
+                parsed_lines = json.loads(manual_lines) if isinstance(manual_lines, str) else manual_lines
+                _save_corrections_to_history(cursor, parsed_lines)
+            except Exception as hist_err:
+                print(f"[review] Error guardando historial: {hist_err}")
+
         db.commit()
         return {"success": True, "review_id": updated["id"], "status": "REVIEWED_OK" if action == "accept" else "CORRECTED"}
 
@@ -929,13 +1001,14 @@ async def purchase_create_oc(
         db = connect_db()
         cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # 1. Leer documento + purchase_review
+        # 1. Leer documento + purchase_review (con bloqueo de fila para evitar concurrencia)
         cursor.execute("""
             SELECT ed.*, pr.id as review_id, pr.status as review_status,
                    pr.ai_suggestions, pr.manual_lines, pr.purchase_order_id
             FROM electronic_documents ed
             JOIN purchase_review pr ON pr.doc_id = ed.id
             WHERE ed.id = %s
+            FOR UPDATE OF pr NOWAIT
         """, (doc_id,))
         doc = cursor.fetchone()
         if not doc:
@@ -997,25 +1070,43 @@ async def purchase_create_oc(
         if not partner:
             raise HTTPException(status_code=404, detail=f"Proveedor con NIT {supplier_nit_clean} no encontrado en Odoo.")
 
-        # 5. Preparar líneas para Odoo — validar producto_id
+        # 5. Preparar líneas para Odoo — validar producto_id y confianza
         oc_lines = []
         sin_producto = 0
-        for line in lines:
+        confianza_baja = 0
+        detalles = []
+        for i, line in enumerate(lines):
             pid = line.get("producto_id")
+            conf = float(line.get("confianza", 0) or 0)
+            nombre_linea = line.get("producto_nombre") or line.get("descripcion_original") or line.get("descripcion", f"Línea {i+1}")
+
             if not pid:
                 sin_producto += 1
+                detalles.append(f"Línea '{nombre_linea}' sin producto_id")
+                continue
+
+            if conf < 0.60:
+                confianza_baja += 1
+                detalles.append(f"Línea '{nombre_linea}' con confianza baja ({conf:.0%})")
+                continue
+
             oc_lines.append({
                 "producto_id": pid,
                 "cantidad": line.get("cantidad", 1),
                 "precio_unitario": line.get("precio_unitario", 0),
-                "nombre": line.get("producto_nombre") or line.get("descripcion_original") or line.get("descripcion", ""),
+                "nombre": nombre_linea,
             })
 
-        if sin_producto == len(oc_lines):
-            raise HTTPException(
-                status_code=400,
-                detail="Ninguna línea tiene un producto_id válido. Debes mapear productos antes de crear la OC."
-            )
+        if not oc_lines:
+            mensaje = "No se puede crear la OC: "
+            if sin_producto:
+                mensaje += f"{sin_producto} línea(s) sin producto mapeado. "
+            if confianza_baja:
+                mensaje += f"{confianza_baja} línea(s) con confianza < 60%. "
+            mensaje += "Usa el botón MAPEAR IA y corrige las líneas con baja confianza."
+            raise HTTPException(status_code=400, detail=mensaje.strip())
+
+        lineas_omitidas = sin_producto + confianza_baja
 
         # 6. Crear OC
         reference = f"FACTUMATCH-{doc_number}" if doc_number else f"FACTUMATCH-{doc_id}"
@@ -1048,12 +1139,12 @@ async def purchase_create_oc(
             "purchase_order_id": order["id"],
             "purchase_order_name": order.get("name", ""),
             "partner_name": partner.get("name", ""),
-            "total_lineas": len(oc_lines),
-            "lineas_procesadas": order.get("lineas_procesadas", len(oc_lines) - sin_producto),
-            "lineas_omitidas": order.get("lineas_omitidas", sin_producto),
+            "total_lineas": len(lines),
+            "lineas_procesadas": len(oc_lines),
+            "lineas_omitidas": lineas_omitidas,
             "state": state,
             "message": f"OC {order.get('name', '')} creada exitosamente." +
-                      (f" {order.get('lineas_omitidas', sin_producto)} línea(s) omitida(s) por no tener producto mapeado." if (order.get("lineas_omitidas", sin_producto)) else "") +
+                      (f" {lineas_omitidas} línea(s) omitida(s): " + "; ".join(detalles) + "." if lineas_omitidas else "") +
                       (" Confirmada." if action == "create_and_confirm" else " En estado borrador.")
         }
 
