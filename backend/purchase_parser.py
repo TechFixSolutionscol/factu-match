@@ -86,6 +86,87 @@ def _extract_brand_tokens(desc: str) -> set:
     return tokens
 
 
+def _score_product_for_line(norm_desc: str, brand_tokens: set, p: dict) -> float:
+    pname = (p.get("name") or "").strip()
+    pcode = (p.get("default_code") or "").strip()
+    pname_norm = _normalize_desc(pname)
+    pcode_norm = _normalize_desc(pcode)
+    
+    if not pname_norm and not pcode_norm:
+        return 0.0
+        
+    try:
+        from thefuzz import fuzz
+    except ImportError:
+        return 0.0
+        
+    score_name_ts = fuzz.token_set_ratio(norm_desc, pname_norm) if pname_norm else 0
+    score_name_partial = fuzz.partial_ratio(norm_desc, pname_norm) if pname_norm else 0
+    score_name_full = fuzz.ratio(norm_desc, pname_norm) if pname_norm else 0
+    score_code = fuzz.partial_ratio(norm_desc, pcode_norm) if pcode_norm else 0
+    
+    score = max(score_name_ts, score_name_partial, score_name_full, score_code)
+    
+    if brand_tokens:
+        pbrand = _extract_brand_tokens(pname)
+        overlap = brand_tokens & pbrand
+        if overlap:
+            score = max(score, min(95.0, score + 25.0))
+            
+    if pcode_norm and pcode_norm in norm_desc:
+        score = max(score, 90.0)
+    if pname_norm and pname_norm in norm_desc:
+        score = max(score, 92.0)
+        
+    return score
+
+
+def _get_top_candidates_for_line(
+    line_desc: str,
+    odoo_products: list,
+    limit_n: int = 15
+) -> list:
+    norm_desc = _normalize_desc(line_desc)
+    if not norm_desc:
+        return odoo_products[:limit_n]
+        
+    brand_tokens = _extract_brand_tokens(line_desc)
+    desc_words = set(norm_desc.lower().split())
+    
+    # Etapa 1: Filtrado rápido por palabras clave si el catálogo es grande
+    if len(odoo_products) > 200:
+        candidates_stage1 = []
+        for p in odoo_products:
+            pname = (p.get("name") or "").lower()
+            pcode = (p.get("default_code") or "").lower()
+            
+            overlap = sum(1 for w in desc_words if w in pname or w in pcode)
+            if overlap > 0:
+                candidates_stage1.append((p, overlap))
+                
+        candidates_stage1.sort(key=lambda x: x[1], reverse=True)
+        filtered_products = [x[0] for x in candidates_stage1[:100]]
+        
+        if len(filtered_products) < 50:
+            added_ids = {p["id"] for p in filtered_products}
+            for p in odoo_products:
+                if p["id"] not in added_ids:
+                    filtered_products.append(p)
+                    if len(filtered_products) >= 100:
+                        break
+    else:
+        filtered_products = odoo_products
+        
+    # Etapa 2: Scoring detallado con fuzzy matching y re-ranking
+    scored = []
+    for p in filtered_products:
+        score = _score_product_for_line(norm_desc, brand_tokens, p)
+        scored.append((p, score))
+        
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in scored[:limit_n]]
+
+
 def _fuzzy_match_line(
     raw_desc: str,
     norm_desc: str,
@@ -95,52 +176,21 @@ def _fuzzy_match_line(
     if not norm_desc or not odoo_products:
         return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
 
-    try:
-        from thefuzz import fuzz
-    except ImportError:
+    candidates = _get_top_candidates_for_line(raw_desc, odoo_products, limit_n=1)
+    if not candidates:
         return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
-
+        
+    p = candidates[0]
     brand_tokens = _extract_brand_tokens(raw_desc)
-    best_score = 0
-    best_pid = None
-    best_pname = None
-
-    for p in odoo_products:
-        pname = (p.get("name") or "").strip()
-        pcode = (p.get("default_code") or "").strip()
-        pname_norm = _normalize_desc(pname)
-        pcode_norm = _normalize_desc(pcode)
-
-        score_name_ts = fuzz.token_set_ratio(norm_desc, pname_norm) if pname_norm else 0
-        score_name_partial = fuzz.partial_ratio(norm_desc, pname_norm) if pname_norm else 0
-        score_name_full = fuzz.ratio(norm_desc, pname_norm) if pname_norm else 0
-        score_code = fuzz.partial_ratio(norm_desc, pcode_norm) if pcode_norm else 0
-
-        score = max(score_name_ts, score_name_partial, score_name_full, score_code)
-
-        if brand_tokens:
-            pbrand = _extract_brand_tokens(pname)
-            overlap = brand_tokens & pbrand
-            if overlap:
-                score = max(score, min(95, score + 25))
-
-        if pcode_norm and pcode_norm in norm_desc:
-            score = max(score, 90)
-        if pname_norm and pname_norm in norm_desc:
-            score = max(score, 92)
-
-        if score > best_score:
-            best_score = score
-            best_pid = p["id"]
-            best_pname = pname
-
-    if best_score >= threshold:
+    score = _score_product_for_line(norm_desc, brand_tokens, p)
+    
+    if score >= threshold:
         return {
-            "producto_id": best_pid,
-            "producto_nombre": best_pname,
-            "confianza": round(min(best_score / 100.0, 1.0), 2),
+            "producto_id": p["id"],
+            "producto_nombre": p.get("name") or "",
+            "confianza": round(min(score / 100.0, 1.0), 2),
         }
-
+        
     return {"producto_id": None, "producto_nombre": None, "confianza": 0.0}
 
 
@@ -150,49 +200,22 @@ def _select_candidates_per_line(
     top_n: int = TOP_CANDIDATES_PER_LINE,
     max_total: int = MAX_CANDIDATES_TOTAL,
 ) -> list:
+    """
+    Retorna la unión de los top_n candidatos para cada línea del documento.
+    """
     if not odoo_products:
         return []
-
-    try:
-        from thefuzz import fuzz
-    except ImportError:
-        return odoo_products[:max_total]
-
-    all_candidates = {}
+        
+    all_selected = {}
     for line in line_items:
         raw_desc = line.get("descripcion_original") or line.get("descripcion", "")
-        norm_desc = _normalize_desc(raw_desc)
-        if not norm_desc:
-            continue
-        brand_tokens = _extract_brand_tokens(raw_desc)
-        scored = []
-        for p in odoo_products:
+        candidates = _get_top_candidates_for_line(raw_desc, odoo_products, limit_n=top_n)
+        for p in candidates:
             pid = p["id"]
-            pname_norm = _normalize_desc(p.get("name") or "")
-            pcode = p.get("default_code") or ""
-            if not pname_norm and not pcode:
-                continue
-            s = fuzz.token_set_ratio(norm_desc, pname_norm) if pname_norm else 0
-            s = max(s, fuzz.partial_ratio(norm_desc, pname_norm) if pname_norm else 0)
-            if brand_tokens:
-                pbrand = _extract_brand_tokens(p.get("name") or "")
-                if brand_tokens & pbrand:
-                    s = max(s, min(95, s + 25))
-            if pcode and pcode in norm_desc:
-                s = max(s, 90)
-            scored.append((pid, s))
-
-        scored.sort(key=lambda x: x[1], reverse=True)
-        for pid, score in scored[:top_n]:
-            if pid not in all_candidates or score > all_candidates[pid]:
-                all_candidates[pid] = score
-
-    sorted_pids = sorted(all_candidates, key=lambda pid: all_candidates[pid], reverse=True)
-    top_pids = set(sorted_pids[:max_total])
-
-    result = [p for p in odoo_products if p["id"] in top_pids]
-    print(f"[purchase_parser] Catalogo completo: {len(odoo_products)} -> pre-seleccionados: {len(result)}")
-    return result if result else odoo_products[:max_total]
+            if pid not in all_selected:
+                all_selected[pid] = p
+                
+    return list(all_selected.values())
 
 
 def _build_prompt(line_items: list, odoo_products: list) -> str:
@@ -200,35 +223,46 @@ def _build_prompt(line_items: list, odoo_products: list) -> str:
     for line in line_items:
         raw = line.get("descripcion_original") or line.get("descripcion", "")
         norm = _normalize_desc(raw)
+        
+        # Obtener candidatos individuales para esta línea específica
+        line_candidates = _get_top_candidates_for_line(raw, odoo_products, limit_n=15)
+        light_candidates = [
+            {
+                "id": p["id"],
+                "name": p.get("name", ""),
+                "default_code": p.get("default_code") or ""
+            }
+            for p in line_candidates
+        ]
+        
         raw_items.append({
             "numero": line.get("numero", ""),
             "descripcion_original": raw,
             "descripcion_normalizada": norm,
             "cantidad": line.get("cantidad", 0),
             "precio_unitario": line.get("precio_unitario", 0),
+            "candidatos_odoo": light_candidates
         })
-    catalogo_json = json.dumps(odoo_products, ensure_ascii=False, indent=2)
+        
     lineas_json = json.dumps(raw_items, ensure_ascii=False, indent=2)
 
-    return f"""Eres un auxiliar contable experto en facturacion electronica colombiana.
-Tu tarea es mapear cada linea de una factura electronica al producto mas similar
-en el catalogo de Odoo.
+    return f"""Eres un auxiliar contable experto en facturación electrónica colombiana.
+Tu tarea es mapear cada línea de una factura electrónica al producto más similar en su lista de 'candidatos_odoo'.
 
 Reglas obligatorias:
-1. Para cada linea, analiza la 'descripcion_original' y la 'descripcion_normalizada'.
-2. Ignora colores, capacidades tecnicas (GB, TB, MHZ), conectividad (WIFI, SSD, HDD),
-   y palabras irrelevantes (N/A, UND, UNIDAD, COLOR, NEGRO, etc.).
-3. Enfocate en la MARCA y el NOMBRE PRINCIPAL del producto.
-   Ej: "CELULAR INFINIX N/A SMART 20 4/128GB N/A" -> el producto es "CELULAR INFINIX" o similar.
-4. Asigna producto_id = null si la confianza es baja (< 60%). NO fuerces matches incorrectos.
-5. Incluye un score de confianza REALISTA (0.0 a 1.0):
-   - 0.90-1.00: Coincidencia exacta de marca y modelo
-   - 0.70-0.89: Coincidencia de marca pero con dudas en el modelo exacto
-   - 0.50-0.69: Coincidencia parcial, algunas palabras clave coinciden
-   - 0.00-0.49: Baja similitud, asigna producto_id = null
-6. Respeta cantidades y precios originales (NO los modifiques).
-7. Responde UNICAMENTE con un array JSON valido. Sin markdown, sin texto adicional.
-8. Si ninguna linea tiene match, devuelve [] vacio.
+1. Para cada línea, analiza la 'descripcion_original', 'descripcion_normalizada' y compárala con los elementos en 'candidatos_odoo'.
+2. Selecciona el 'id' de la lista 'candidatos_odoo' que tenga mejor correspondencia.
+3. Ignora colores, capacidades técnicas (GB, TB, MHZ, GHZ), conectividad (WIFI, SSD, HDD) y palabras irrelevantes (N/A, UND, UNIDAD, COLOR, NEGRO, etc.).
+4. Enfócate en la MARCA y el NOMBRE PRINCIPAL del producto.
+5. Asigna producto_id = null si la confianza es baja (< 60%) o si ninguno de los 'candidatos_odoo' es una coincidencia correcta. NO fuerces matches incorrectos.
+6. Incluye un score de confianza REALISTA y estricto (0.0 a 1.0):
+   - 0.90-1.00: Coincidencia exacta de marca y nombre principal
+   - 0.70-0.89: Coincidencia de marca pero con dudas en el modelo o variaciones menores
+   - 0.60-0.69: Coincidencia parcial dudosa (requiere revisión)
+   - 0.00-0.59: Baja similitud o sin match correcto. Asigna producto_id = null.
+7. Respeta cantidades y precios originales (NO los modifiques).
+8. Responde ÚNICAMENTE con un array JSON válido. Sin markdown, sin texto adicional.
+9. Si ninguna línea tiene match, devuelve [] vacío.
 
 Formato de respuesta:
 [
@@ -241,15 +275,12 @@ Formato de respuesta:
     "cantidad": 10.0,
     "precio_unitario": 15000.0,
     "confianza": 0.95,
-    "razon": "Coincidencia por marca y nombre: CELULAR INFINIX SMART 20"
+    "razon": "Coincidencia exacta por marca y nombre: CELULAR INFINIX"
   }}
 ]
 
-Lineas de la factura (con descripcion normalizada):
-{lineas_json}
-
-Catalogo de productos Odoo (pre-seleccionados como candidatos):
-{catalogo_json}"""
+Líneas de la factura (cada una con su lista de candidatos pre-seleccionados):
+{lineas_json}"""
 
 
 def _lines_hash(line_items: list, odoo_products: list) -> str:
@@ -292,12 +323,71 @@ def _save_cache(cursor, line_hash: str, line_items: list, odoo_products: list, r
     ))
 
 
+def _balance_json_brackets(s: str) -> str:
+    """
+    Intenta cerrar corchetes y llaves abiertos si el JSON fue truncado.
+    """
+    stack = []
+    in_string = False
+    escaped = False
+    
+    clean_s = []
+    for i, char in enumerate(s):
+        if escaped:
+            escaped = False
+            clean_s.append(char)
+            continue
+        if char == '\\':
+            escaped = True
+            clean_s.append(char)
+            continue
+        if char == '"':
+            in_string = not in_string
+            clean_s.append(char)
+            continue
+        
+        if not in_string:
+            if char in ('{', '['):
+                stack.append(char)
+            elif char in ('}', ']'):
+                if not stack:
+                    continue
+                top = stack[-1]
+                if (char == '}' and top == '{') or (char == ']' and top == '['):
+                    stack.pop()
+        clean_s.append(char)
+        
+    s = "".join(clean_s)
+    
+    if in_string:
+        s += '"'
+        
+    while stack:
+        top = stack.pop()
+        if top == '{':
+            s += '}'
+        elif top == '[':
+            s += ']'
+            
+    return s
+
+
 def _repair_json(raw: str) -> str:
     s = raw.strip()
-    s = re.sub(r'```(?:json)?\s*', '', s)
+    # Limpiar formato de bloques de código markdown
+    s = re.sub(r'^```(?:json)?\s*', '', s)
+    s = re.sub(r'\s*```$', '', s)
+    s = s.strip()
+    
+    # Reemplazar valores no válidos en JSON (estilo Python/Javascript)
     s = s.replace('True', 'true').replace('False', 'false').replace('None', 'null')
+    
+    # Eliminar comas finales superfluas antes de llaves o corchetes de cierre
     s = re.sub(r',\s*([\]}])', r'\1', s)
     s = re.sub(r'([{\[,])\s*([}\]])', r'\1\2', s)
+    
+    # Balancear llaves y corchetes abiertos en caso de truncado
+    s = _balance_json_brackets(s)
     return s.strip()
 
 
@@ -323,7 +413,10 @@ def _call_groq(prompt: str, api_key: str) -> str:
 
 def _call_groq_with_retry(prompt: str, api_key: str) -> list:
     last_error = None
-    for attempt in range(GROQ_MAX_RETRIES):
+    base_delay = 2.0
+    max_retries = 5
+    
+    for attempt in range(max_retries):
         try:
             content = _call_groq(prompt, api_key)
             content = _repair_json(content)
@@ -334,50 +427,65 @@ def _call_groq_with_retry(prompt: str, api_key: str) -> list:
             return resultado
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             last_error = f"Parse error: {e}"
-            print(f"[purchase_parser] Intento {attempt+1}/{GROQ_MAX_RETRIES}: {last_error}")
-            if attempt < GROQ_MAX_RETRIES - 1:
-                delay = GROQ_RETRY_DELAYS[min(attempt, len(GROQ_RETRY_DELAYS) - 1)]
-                time.sleep(delay)
+            print(f"[purchase_parser] Intento {attempt+1}/{max_retries}: {last_error}")
         except httpx.TimeoutException as e:
             last_error = f"Timeout: {e}"
-            print(f"[purchase_parser] Intento {attempt+1}/{GROQ_MAX_RETRIES}: {last_error}")
-            if attempt < GROQ_MAX_RETRIES - 1:
-                delay = GROQ_RETRY_DELAYS[min(attempt, len(GROQ_RETRY_DELAYS) - 1)]
-                time.sleep(delay)
+            print(f"[purchase_parser] Intento {attempt+1}/{max_retries}: {last_error}")
         except httpx.HTTPStatusError as e:
-            if e.response.status_code in (429, 500, 502, 503):
-                last_error = f"HTTP {e.response.status_code}"
-                print(f"[purchase_parser] Intento {attempt+1}/{GROQ_MAX_RETRIES}: {last_error}")
-                if attempt < GROQ_MAX_RETRIES - 1:
-                    delay = GROQ_RETRY_DELAYS[min(attempt, len(GROQ_RETRY_DELAYS) - 1)]
-                    time.sleep(delay)
+            if e.response.status_code in (429, 500, 502, 503, 504):
+                last_error = f"HTTP {e.response.status_code}: {e.response.text}"
+                print(f"[purchase_parser] Intento {attempt+1}/{max_retries}: {last_error}")
             else:
-                raise
+                raise e
+        except Exception as e:
+            last_error = f"Unexpected: {e}"
+            print(f"[purchase_parser] Intento {attempt+1}/{max_retries}: {last_error}")
+            
+        if attempt < max_retries - 1:
+            import random
+            delay = (base_delay * (2 ** attempt)) + random.uniform(0.1, 1.0)
+            print(f"[purchase_parser] Esperando {delay:.2f} segundos antes del reintento...")
+            time.sleep(delay)
 
-    raise RuntimeError(f"Groq fallo tras {GROQ_MAX_RETRIES} intentos: {last_error}")
+    raise RuntimeError(f"Groq fallo tras {max_retries} intentos: {last_error}")
 
 
-def _lookup_correction_history(norm_desc: str, cursor) -> dict:
-    if not norm_desc or not cursor:
-        return None
+def _lookup_corrections_bulk(norms: list, cursor) -> dict:
+    if not norms or not cursor:
+        return {}
     try:
-        cursor.execute(
-            "SELECT producto_id, producto_nombre FROM correction_history WHERE normalized_desc = %s ORDER BY created_at DESC LIMIT 1",
-            (norm_desc,)
-        )
-        row = cursor.fetchone()
-        if row:
-            row_dict = row if isinstance(row, dict) else {"producto_id": row[0], "producto_nombre": row[1]}
-            if row_dict.get("producto_id"):
-                return {
-                    "producto_id": row_dict["producto_id"],
-                    "producto_nombre": row_dict.get("producto_nombre", ""),
-                    "confianza": 0.90,
-                    "razon": "Basado en correccion humana previa",
+        placeholders = ", ".join(["%s"] * len(norms))
+        query = f"""
+            SELECT DISTINCT ON (normalized_desc) normalized_desc, producto_id, producto_nombre
+            FROM correction_history
+            WHERE normalized_desc IN ({placeholders})
+            ORDER BY normalized_desc, created_at DESC
+        """
+        cursor.execute(query, tuple(norms))
+        rows = cursor.fetchall()
+        
+        corrections = {}
+        for row in rows:
+            if isinstance(row, dict):
+                norm = row["normalized_desc"]
+                pid = row["producto_id"]
+                pname = row["producto_nombre"]
+            else:
+                norm = row[0]
+                pid = row[1]
+                pname = row[2]
+                
+            if pid:
+                corrections[norm] = {
+                    "producto_id": pid,
+                    "producto_nombre": pname,
+                    "confianza": 1.0,
+                    "razon": "Basado en correccion humana previa"
                 }
-    except Exception:
-        pass
-    return None
+        return corrections
+    except Exception as e:
+        print(f"[purchase_parser] Error en consulta bulk de correcciones: {e}")
+        return {}
 
 
 def _validate_confidence(resultado: list) -> list:
@@ -411,13 +519,27 @@ def _save_corrections_to_history(cursor, manual_lines: list):
             pid = line.get("producto_id")
             pname = line.get("producto_nombre", "")
             if norm and pid:
+                # Verificar si ya existe registro para esta descripción normalizada
                 cursor.execute(
-                    "INSERT INTO correction_history (normalized_desc, producto_id, producto_nombre) VALUES (%s, %s, %s)",
-                    (norm, pid, pname)
+                    "SELECT id FROM correction_history WHERE normalized_desc = %s",
+                    (norm,)
                 )
+                row = cursor.fetchone()
+                if row:
+                    row_id = row["id"] if isinstance(row, dict) else row[0]
+                    cursor.execute("""
+                        UPDATE correction_history
+                        SET producto_id = %s, producto_nombre = %s, created_at = NOW()
+                        WHERE id = %s
+                    """, (pid, pname, row_id))
+                else:
+                    cursor.execute("""
+                        INSERT INTO correction_history (normalized_desc, producto_id, producto_nombre, created_at)
+                        VALUES (%s, %s, %s, NOW())
+                    """, (norm, pid, pname))
                 saved += 1
         cursor.connection.commit()
-        print(f"[purchase_parser] {saved} correccion(es) guardada(s) en history")
+        print(f"[purchase_parser] {saved} correccion(es) guardada(s)/actualizada(s) en history")
     except Exception as e:
         print(f"[purchase_parser] Error guardando historial: {e}")
         cursor.connection.rollback()
@@ -493,16 +615,17 @@ def map_lines_to_odoo(
             cache_hit = True
             print(f"[purchase_parser] CACHE HIT v{ALGORITHM_VERSION} — {len(cached)} lineas")
 
-    # 2. Obtener correcciones humanas previas
+    # 2. Obtener correcciones humanas previas (consulta bulk)
     corrections = {}
     if db_cursor:
+        norms = []
         for line in line_items:
             raw = line.get("descripcion_original") or line.get("descripcion", "")
             norm = _normalize_desc(raw)
             if norm:
-                corr = _lookup_correction_history(norm, db_cursor)
-                if corr:
-                    corrections[norm] = corr
+                norms.append(norm)
+        if norms:
+            corrections = _lookup_corrections_bulk(norms, db_cursor)
 
     # 3. Si hay cache y no hay correcciones, aplicar validacion y retornar
     if cache_hit and not corrections:
@@ -543,7 +666,7 @@ def map_lines_to_odoo(
     # 6. Enviar a Groq solo las lineas sin correccion
     if lines_for_groq:
         try:
-            prompt = _build_prompt(lines_for_groq, top_candidates)
+            prompt = _build_prompt(lines_for_groq, odoo_products)
             groq_result = _call_groq_with_retry(prompt, groq_api_key)
 
             for r in groq_result:

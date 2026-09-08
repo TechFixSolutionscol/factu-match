@@ -2,9 +2,7 @@
 -- Crea las tablas para el módulo de Compras Automáticas.
 -- Ejecutar: psql $NEON_DB_URL -f migrations/001_purchase_review.sql
 
-DROP TABLE IF EXISTS purchase_review CASCADE;
-
-CREATE TABLE purchase_review (
+CREATE TABLE IF NOT EXISTS purchase_review (
     id SERIAL PRIMARY KEY,
     doc_id UUID NOT NULL,
     company_id VARCHAR(64) NOT NULL,
@@ -29,3 +27,21 @@ CREATE TABLE IF NOT EXISTS product_mapping_cache (
     resultado_json TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- correction_history (aprendizaje automático)
+CREATE TABLE IF NOT EXISTS correction_history (
+    id SERIAL PRIMARY KEY,
+    normalized_desc TEXT NOT NULL,
+    producto_id INTEGER NOT NULL,
+    producto_nombre TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Deduplicar antes de agregar restricción de unicidad
+DELETE FROM correction_history a
+USING correction_history b
+WHERE a.id < b.id AND a.normalized_desc = b.normalized_desc;
+
+-- Crear un índice único sobre normalized_desc para permitir ON CONFLICT
+CREATE UNIQUE INDEX IF NOT EXISTS idx_correction_history_desc_uniq ON correction_history(normalized_desc);
+

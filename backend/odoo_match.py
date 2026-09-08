@@ -80,6 +80,13 @@ class OdooConnector:
             return uid
         except OdooAuthError:
             raise
+        except xmlrpc.client.ProtocolError as e:
+            if e.errcode == 404:
+                raise OdooConnectionError(
+                    f"URL de Odoo inválida ({self.url}): la instancia no existe o no está en línea. "
+                    "Verifique la URL en Configuración > Odoo."
+                )
+            raise OdooConnectionError(f"No se pudo conectar a Odoo: {str(e)}")
         except Exception as e:
             raise OdooConnectionError(f"No se pudo conectar a Odoo: {str(e)}")
 
@@ -284,30 +291,72 @@ class OdooConnector:
 
     # ── Búsqueda de productos ──
 
-    def search_products(self, query: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+    def get_catalog_last_update(self) -> str:
+        """
+        Retorna un hash/identificador basado en la cantidad de productos
+        y la última fecha de modificación. Esto permite invalidar el caché.
+        """
+        try:
+            if not self._uid:
+                self.authenticate()
+            models = self._get_models_proxy()
+            
+            # Contar productos activos
+            count = models.execute_kw(
+                self.database, self._uid, self.api_key,
+                "product.product", "search_count",
+                [[("active", "=", True)]]
+            )
+            
+            # Obtener fecha de última modificación
+            latest = models.execute_kw(
+                self.database, self._uid, self.api_key,
+                "product.product", "search_read",
+                [[("active", "=", True)]],
+                {"fields": ["write_date"], "order": "write_date desc", "limit": 1}
+            )
+            write_date = latest[0]["write_date"] if latest else "1970-01-01 00:00:00"
+            return f"{count}_{write_date}"
+        except Exception as e:
+            print(f"[OdooConnector] Error obteniendo actualización del catálogo: {e}")
+            import time
+            return f"error_{int(time.time())}"
+
+    def search_products(
+        self,
+        query: str = "",
+        limit: Optional[int] = 200,
+        fields: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Busca productos en Odoo (product.product) por nombre o código.
-        Retorna lista con id, name, default_code, price, type.
+        Retorna lista con los campos especificados.
         """
         if not self._uid:
             self.authenticate()
         models = self._get_models_proxy()
 
-        domain = ["|", ("name", "ilike", query), ("default_code", "ilike", query)] if query else []
+        domain = ["|", ("name", "ilike", query), ("default_code", "ilike", query)] if query else [("active", "=", True)]
+        
+        search_opts = {}
+        if limit is not None:
+            search_opts["limit"] = limit
+
         product_ids = models.execute_kw(
             self.database, self._uid, self.api_key,
             "product.product", "search",
             [domain],
-            {"limit": limit}
+            search_opts
         )
         if not product_ids:
             return []
 
+        fields_to_read = fields or ["id", "name", "default_code", "list_price", "type"]
         return models.execute_kw(
             self.database, self._uid, self.api_key,
             "product.product", "read",
             [product_ids],
-            {"fields": ["id", "name", "default_code", "list_price", "type"]}
+            {"fields": fields_to_read}
         )
 
     # ── Búsqueda de proveedor por NIT ──

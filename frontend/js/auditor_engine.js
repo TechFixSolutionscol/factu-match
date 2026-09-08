@@ -15,6 +15,12 @@ document.addEventListener("DOMContentLoaded", () => {
     btnReadEmails.addEventListener("click", readNewEmails);
   }
 
+  // Botón de re-sincronización forzada (para cuando se borró la BD)
+  const btnForceResync = document.getElementById("btn-auditor-force-resync");
+  if (btnForceResync) {
+    btnForceResync.addEventListener("click", forceResyncEmails);
+  }
+
   const btnFilter = document.getElementById("btn-auditor-filter");
   if (btnFilter) {
     btnFilter.addEventListener("click", loadAuditorDashboard);
@@ -29,47 +35,47 @@ document.addEventListener("DOMContentLoaded", () => {
 async function loadAuditorDashboard() {
   const tbody = document.getElementById("auditor-tabla-body");
   if (!tbody) return;
-  
+
   tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:15px;"><div class="btn-loader" style="margin:0 auto;"></div></td></tr>';
-  
+
   try {
     let url = `${API_URL}/api/dashboard-auditoria`;
     const monthVal = document.getElementById("auditor-filter-month")?.value;
-    
+
     if (monthVal) {
       const [y, m] = monthVal.split("-");
       url += `?month=${m}&year=${y}`;
     }
-    
+
     const res = await fetch(url);
     if (!res.ok) throw new Error("Error en respuesta del servidor");
-    
+
     const data = await res.json();
-    
+
     if (data.success) {
       // Update Metrics
       document.getElementById("auditor-total-recibidas").textContent = data.metrics.total_recibidas;
       document.getElementById("auditor-total-cruzadas").textContent = data.metrics.total_cruzadas;
       document.getElementById("auditor-total-faltantes").textContent = data.metrics.total_faltantes;
       document.getElementById("auditor-accuracy").textContent = data.metrics.accuracy + "%";
-      
+
       // Update Table
       tbody.innerHTML = "";
       if (data.faltantes.length === 0) {
         tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:15px; color:var(--green);">¡Todo está cruzado correctamente! No hay facturas pendientes.</td></tr>';
         return;
       }
-      
+
       data.faltantes.forEach(f => {
         const tr = document.createElement("tr");
-        const issueDate = f.issue_date ? new Date(f.issue_date).toLocaleDateString() : 'N/A';
-        const totalAmount = parseFloat(f.total_amount || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-        const subtotal = parseFloat(f.tax_exclusive_amount || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-        
+        const issueDate = f.issue_date ? new Date(f.issue_date).toLocaleDateString() : "N/A";
+        const totalAmount = parseFloat(f.total_amount || 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
+        const subtotal = parseFloat(f.tax_exclusive_amount || 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
+
         tr.innerHTML = `
           <td style="padding:0.75rem;">${issueDate}</td>
           <td style="padding:0.75rem;">
-            <div style="font-weight:600; color:var(--text);">${f.supplier_name || 'Desconocido'}</div>
+            <div style="font-weight:600; color:var(--text);">${f.supplier_name || "Desconocido"}</div>
             <div style="font-size:0.6rem; color:var(--text-dim);">NIT: ${f.supplier_nit}</div>
           </td>
           <td style="padding:0.75rem; text-align:center; color:var(--cyan);">${f.document_number}</td>
@@ -81,7 +87,7 @@ async function loadAuditorDashboard() {
         `;
         tbody.appendChild(tr);
       });
-      
+
     } else {
       throw new Error(data.detail || "Error desconocido");
     }
@@ -95,40 +101,39 @@ async function syncAuditorOdoo() {
   const dateFrom = document.getElementById("auditor-date-from").value;
   const dateTo = document.getElementById("auditor-date-to").value;
   const msgDiv = document.getElementById("auditor-sync-msg");
-  
+
   if (!dateFrom || !dateTo) {
     msgDiv.innerHTML = '<span class="t-err">Seleccione un rango de fechas válido.</span>';
     return;
   }
-  
+
   const savedCreds = localStorage.getItem("odoo_credentials");
   if (!savedCreds) {
     msgDiv.innerHTML = '<span class="t-err">No hay credenciales de Odoo guardadas. Vaya a CONFIGURACIÓN.</span>';
     return;
   }
-  
+
   const btn = document.getElementById("btn-auditor-sync");
   const originalHtml = btn.innerHTML;
   btn.innerHTML = '<div class="btn-loader"></div> SINCRONIZANDO...';
   btn.disabled = true;
   msgDiv.innerHTML = '<span class="t-msg">Conectando a Odoo y cruzando datos... Esto puede tomar unos minutos.</span>';
-  
+
   try {
     const formData = new FormData();
     formData.append("credentials", savedCreds);
     formData.append("date_from", dateFrom);
     formData.append("date_to", dateTo);
-    
+
     const res = await fetch(`${API_URL}/api/sync-odoo-invoices`, {
       method: "POST",
       body: formData
     });
-    
+
     const data = await res.json();
-    
+
     if (res.ok && data.success) {
       msgDiv.innerHTML = `<span class="t-ok">${data.message}</span>`;
-      // Recargar la tabla
       loadAuditorDashboard();
     } else {
       throw new Error(data.detail || data.error || "Error sincronizando con Odoo.");
@@ -146,20 +151,20 @@ async function readNewEmails() {
   const btn = document.getElementById("btn-auditor-read-emails");
   const msgDiv = document.getElementById("auditor-sync-msg");
   const originalHtml = btn.innerHTML;
-  
+
   btn.innerHTML = '<div class="btn-loader"></div> LEYENDO...';
   btn.disabled = true;
   msgDiv.innerHTML = '<span class="t-msg">Conectando a la bandeja de entrada y extrayendo XMLs...</span>';
-  
+
   try {
     const res = await fetch(`${API_URL}/sync-emails`, {
       method: "POST"
     });
     const data = await res.json();
-    
+
     if (res.ok) {
-      msgDiv.innerHTML = `<span class="t-ok">Lectura finalizada. Revisa si hay nuevas facturas en la tabla.</span>`;
-      // Recargar tabla
+      const n = data.processed_invoices || 0;
+      msgDiv.innerHTML = `<span class="t-ok">✅ Lectura finalizada: ${n} factura(s) importada(s). Revisa si hay nuevas facturas en la tabla.</span>`;
       loadAuditorDashboard();
     } else {
       throw new Error(data.detail || "Error leyendo correos.");
@@ -173,3 +178,51 @@ async function readNewEmails() {
   }
 }
 
+// ── Re-sincronización forzada ──────────────────────────────────────────
+// Escanea TODOS los correos del buzón (incluso ya leídos) y repuebla la BD.
+// Útil cuando se borró la BD y los correos ya están marcados como LEÍDOS.
+async function forceResyncEmails() {
+  const btn = document.getElementById("btn-auditor-force-resync");
+  const msgDiv = document.getElementById("auditor-sync-msg");
+
+  const confirmed = confirm(
+    "⚠️ RE-SINCRONIZACIÓN FORZADA\n\n" +
+    "Esto escaneará TODOS los correos del buzón (incluso los ya leídos) " +
+    "y reimportará las facturas a la base de datos.\n\n" +
+    "Puede tardar varios minutos dependiendo del volumen de correos.\n\n" +
+    "¿Continuar?"
+  );
+  if (!confirmed) return;
+
+  const originalHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.innerHTML = '<div class="btn-loader"></div> RE-IMPORTANDO...';
+    btn.disabled = true;
+  }
+  msgDiv.innerHTML = '<span class="t-msg">⏳ Escaneando TODOS los correos... Por favor espera, esto puede tardar varios minutos.</span>';
+
+  try {
+    const res = await fetch(`${API_URL}/sync-emails/force`, {
+      method: "POST"
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      const n = data.processed_invoices || 0;
+      const errs = data.errors?.length || 0;
+      const errMsg = errs > 0 ? `, ${errs} error(es)` : "";
+      msgDiv.innerHTML = `<span class="t-ok">✅ Re-sincronización completada: ${n} factura(s) reimportada(s)${errMsg}.</span>`;
+      loadAuditorDashboard();
+    } else {
+      throw new Error(data.detail || "Error en re-sincronización forzada.");
+    }
+  } catch (error) {
+    console.error("Error force resync:", error);
+    msgDiv.innerHTML = `<span class="t-err">❌ Error: ${error.message}</span>`;
+  } finally {
+    if (btn) {
+      btn.innerHTML = originalHtml;
+      btn.disabled = false;
+    }
+  }
+}

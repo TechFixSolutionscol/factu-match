@@ -284,13 +284,18 @@ function openCorrectionModal(docId) {
     const tr = document.createElement("tr");
     tr.style.borderBottom = "1px solid var(--border)";
     tr.dataset.idx = i;
+    // Guardar todos los campos originales en data-* para preservarlos al guardar
+    const descOrig = (l.descripcion_original || l.descripcion || "").replace(/"/g, '&quot;');
     const prodName = l.producto_nombre || l.codigo_producto || "";
     const prodId = l.producto_id || "";
+    const numLinea = l.numero_linea || l.numero || String(i + 1);
     tr.innerHTML = `
-      <td style="padding:6px;">${l.numero_linea || l.numero || (i+1)}</td>
+      <td style="padding:6px;">${numLinea}</td>
       <td style="padding:6px; color:var(--text-dim);">${l.descripcion_original || l.descripcion || "—"}</td>
       <td style="padding:6px; position:relative;">
         <input type="hidden" class="modal-pid-input" data-idx="${i}" value="${prodId}" />
+        <input type="hidden" class="modal-desc-input" data-idx="${i}" value="${descOrig}" />
+        <input type="hidden" class="modal-numlinea-input" data-idx="${i}" value="${numLinea}" />
         <div style="display:flex; gap:3px; align-items:center;">
           <input type="text" class="login-input modal-product-input" data-idx="${i}"
             value="${prodName}"
@@ -397,19 +402,39 @@ async function saveCorrections() {
 
   const productInputs = document.querySelectorAll(".modal-product-input");
   const pidInputs = document.querySelectorAll(".modal-pid-input");
+  const descInputs = document.querySelectorAll(".modal-desc-input");
+  const numLineaInputs = document.querySelectorAll(".modal-numlinea-input");
   const qtyInputs = document.querySelectorAll(".modal-qty-input");
   const priceInputs = document.querySelectorAll(".modal-price-input");
 
   const manualLines = [];
   productInputs.forEach((input, i) => {
+    const pid = parseInt(pidInputs[i]?.value) || null;
+    const pname = input.value.trim();
+    // Validar que la línea tiene producto asignado
+    if (!pid) {
+      console.warn(`Línea ${i+1}: sin producto_id asignado (se usará null)`);
+    }
     manualLines.push({
-      numero_linea: String(i + 1),
-      producto_id: parseInt(pidInputs[i]?.value) || null,
-      producto_nombre: input.value.trim(),
+      numero_linea: numLineaInputs[i]?.value || String(i + 1),
+      // descripcion_original es clave para correction_history
+      descripcion_original: descInputs[i]?.value || "",
+      producto_id: pid,
+      producto_nombre: pname,
+      confianza: pid ? 1.0 : 0.0,   // línea corregida manualmente = confianza total
+      razon: pid ? "Corregido manualmente por el usuario" : "Sin producto asignado",
       cantidad: parseFloat(qtyInputs[i]?.value) || 0,
       precio_unitario: parseFloat(priceInputs[i]?.value) || 0,
     });
   });
+
+  // Validar que al menos una línea tiene producto asignado
+  const lineasSinProducto = manualLines.filter(l => !l.producto_id);
+  if (lineasSinProducto.length > 0) {
+    const nombres = lineasSinProducto.map((l, i) => `Línea ${l.numero_linea}: "${l.descripcion_original || '—'}"`).join("\n");
+    const continuar = confirm(`⚠️ Las siguientes líneas no tienen producto asignado:\n${nombres}\n\n¿Continuar de todas formas?`);
+    if (!continuar) return;
+  }
 
   try {
     const formData = new FormData();
@@ -424,7 +449,7 @@ async function saveCorrections() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `Error ${res.status}`);
 
-    log(`Correcciones guardadas para documento #${currentModalDocId}.`, "ok");
+    log(`✅ Correcciones guardadas para documento #${currentModalDocId}. ${manualLines.length} línea(s) procesadas.`, "ok");
     closeModal();
     await loadPending();
   } catch (err) {

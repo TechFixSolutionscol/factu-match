@@ -149,9 +149,12 @@ def parse_ubl_xml(xml_bytes):
         print(f"Error parseando XML: {e}")
         return None
 
-def process_emails():
+def _process_emails_core(force_resync: bool = False) -> dict:
     """
-    Función principal que lee el correo, busca ZIPs, extrae XMLs y los guarda.
+    Núcleo de procesamiento de correos.
+    force_resync=False → solo correos UNSEEN, idempotente por Message-ID.
+    force_resync=True  → todos los correos (ALL), re-procesa aunque ya existan en logs,
+                         y hace UPSERT en electronic_documents (sobrescribe por CUFE).
     """
     if not all([IMAP_USER, IMAP_PASSWORD, NEON_DB_URL]):
         return {"status": "error", "message": "Credenciales de correo o BD faltantes en .env"}
@@ -159,13 +162,13 @@ def process_emails():
     db = None
     mail = None
     processed_count = 0
+    skipped_count = 0
     errors = []
 
     try:
         db = connect_db()
         cursor = db.cursor()
-        
-        # Para el MVP usaremos la primera empresa que encuentre o la ID genérica
+
         cursor.execute("SELECT id FROM companies LIMIT 1;")
         company_row = cursor.fetchone()
         if not company_row:
@@ -177,85 +180,130 @@ def process_emails():
             mail.select("inbox")
         except Exception as e:
             return {"status": "error", "message": f"Error conectando a IMAP: {str(e)}"}
-        
-        # Buscar correos no leídos
-        status, messages = mail.search(None, "UNSEEN")
+
+        # En modo forzado buscamos TODOS los correos; en normal solo los no leídos
+        imap_criteria = "ALL" if force_resync else "UNSEEN"
+        status, messages = mail.search(None, imap_criteria)
         if status != "OK" or not messages[0]:
-            return {"status": "success", "message": "No hay correos nuevos por procesar.", "processed_invoices": 0}
-        
+            label = "correos" if force_resync else "correos nuevos"
+            return {"status": "success", "message": f"No hay {label} por procesar.", "processed_invoices": 0, "skipped": 0}
+
         msg_ids = messages[0].split()
-        
+        print(f"[email_parser] {'FORCE' if force_resync else 'NORMAL'} — {len(msg_ids)} correos a revisar")
+
         for msg_id in msg_ids:
             res, msg_data = mail.fetch(msg_id, "(RFC822)")
             for response_part in msg_data:
                 if isinstance(response_part, tuple):
                     msg = email.message_from_bytes(response_part[1])
-                    
+
                     email_msg_id = msg.get("Message-ID", f"unknown-{msg_id.decode('utf-8')}").strip()
                     subject_header = decode_header(msg.get("Subject", ""))[0]
                     subject = subject_header[0]
                     if isinstance(subject, bytes):
-                        subject = subject.decode(subject_header[1] or 'utf-8', errors='ignore')
-                        
+                        subject = subject.decode(subject_header[1] or "utf-8", errors="ignore")
                     sender = msg.get("From", "Unknown")
 
-                    # Verificar idempotencia
-                    cursor.execute("SELECT id FROM email_inbox_logs WHERE message_id = %s", (email_msg_id,))
-                    if cursor.fetchone():
-                        continue
+                    if force_resync:
+                        # En modo forzado: eliminar log anterior para permitir re-inserción
+                        cursor.execute(
+                            "DELETE FROM email_inbox_logs WHERE message_id = %s",
+                            (email_msg_id,)
+                        )
+                    else:
+                        # En modo normal: saltar correos ya procesados
+                        cursor.execute(
+                            "SELECT id FROM email_inbox_logs WHERE message_id = %s",
+                            (email_msg_id,)
+                        )
+                        if cursor.fetchone():
+                            skipped_count += 1
+                            continue
 
-                    # Registrar correo
+                    # Registrar correo en logs
                     cursor.execute("""
                         INSERT INTO email_inbox_logs (company_id, message_id, sender_email, subject, received_at, status)
                         VALUES (%s, %s, %s, %s, NOW(), 'PROCESSING') RETURNING id
                     """, (company_id, email_msg_id, sender, subject))
                     log_id = cursor.fetchone()[0]
-                    
+
                     xml_parsed = False
-                    
+
                     for part in msg.walk():
                         if part.get_content_maintype() == "multipart":
                             continue
-                        
                         filename = part.get_filename()
                         if not filename:
                             continue
-                            
-                        # Extraer adjuntos .zip
-                        if filename.lower().endswith('.zip'):
+
+                        if filename.lower().endswith(".zip"):
                             try:
                                 zip_data = part.get_payload(decode=True)
                                 with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
                                     for zinfo in z.infolist():
-                                        if zinfo.filename.lower().endswith('.xml'):
+                                        if zinfo.filename.lower().endswith(".xml"):
                                             xml_bytes = z.read(zinfo.filename)
                                             doc_data = parse_ubl_xml(xml_bytes)
-                                            
                                             if doc_data:
-                                                cursor.execute("""
-                                                    INSERT INTO electronic_documents 
-                                                    (company_id, email_log_id, cufe, document_number, document_type, 
-                                                    supplier_nit, supplier_name, issue_date, currency, subtotal, tax_amount, total_amount, xml_metadata)
-                                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                                    ON CONFLICT (cufe) DO NOTHING
-                                                """, (company_id, log_id, doc_data["cufe"], doc_data["document_number"], 
-                                                      doc_data["document_type"], doc_data["supplier_nit"], doc_data["supplier_name"], 
-                                                      doc_data["issue_date"], doc_data["currency"], doc_data["subtotal"], 
-                                                      doc_data["tax_amount"], doc_data["total_amount"], doc_data["xml_metadata"]))
+                                                if force_resync:
+                                                    # UPSERT: si ya existe por CUFE, actualizar datos
+                                                    cursor.execute("""
+                                                        INSERT INTO electronic_documents
+                                                        (company_id, email_log_id, cufe, document_number, document_type,
+                                                         supplier_nit, supplier_name, issue_date, currency, subtotal,
+                                                         tax_amount, total_amount, xml_metadata)
+                                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                        ON CONFLICT (cufe) DO UPDATE SET
+                                                            email_log_id   = EXCLUDED.email_log_id,
+                                                            document_number= EXCLUDED.document_number,
+                                                            supplier_nit   = EXCLUDED.supplier_nit,
+                                                            supplier_name  = EXCLUDED.supplier_name,
+                                                            issue_date     = EXCLUDED.issue_date,
+                                                            xml_metadata   = EXCLUDED.xml_metadata
+                                                    """, (
+                                                        company_id, log_id, doc_data["cufe"],
+                                                        doc_data["document_number"], doc_data["document_type"],
+                                                        doc_data["supplier_nit"], doc_data["supplier_name"],
+                                                        doc_data["issue_date"], doc_data["currency"],
+                                                        doc_data["subtotal"], doc_data["tax_amount"],
+                                                        doc_data["total_amount"], doc_data["xml_metadata"],
+                                                    ))
+                                                else:
+                                                    cursor.execute("""
+                                                        INSERT INTO electronic_documents
+                                                        (company_id, email_log_id, cufe, document_number, document_type,
+                                                         supplier_nit, supplier_name, issue_date, currency, subtotal,
+                                                         tax_amount, total_amount, xml_metadata)
+                                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                        ON CONFLICT (cufe) DO NOTHING
+                                                    """, (
+                                                        company_id, log_id, doc_data["cufe"],
+                                                        doc_data["document_number"], doc_data["document_type"],
+                                                        doc_data["supplier_nit"], doc_data["supplier_name"],
+                                                        doc_data["issue_date"], doc_data["currency"],
+                                                        doc_data["subtotal"], doc_data["tax_amount"],
+                                                        doc_data["total_amount"], doc_data["xml_metadata"],
+                                                    ))
                                                 xml_parsed = True
                                                 processed_count += 1
                             except Exception as e:
                                 errors.append(f"Error procesando ZIP {filename}: {str(e)}")
-                                
+
                     final_status = "SUCCESS" if xml_parsed else "NO_XML_FOUND"
-                    cursor.execute("UPDATE email_inbox_logs SET status = %s WHERE id = %s", (final_status, log_id))
+                    cursor.execute(
+                        "UPDATE email_inbox_logs SET status = %s WHERE id = %s",
+                        (final_status, log_id)
+                    )
                     db.commit()
 
+        mode_label = "re-sincronización forzada" if force_resync else "escaneo de bandeja"
         return {
             "status": "success",
-            "message": "Escaneo de bandeja de entrada completado.",
+            "message": f"{mode_label.capitalize()} completado.",
             "processed_invoices": processed_count,
-            "errors": errors
+            "skipped": skipped_count,
+            "errors": errors,
+            "force_resync": force_resync,
         }
 
     except Exception as e:
@@ -271,3 +319,17 @@ def process_emails():
                 mail.logout()
             except:
                 pass
+
+
+def process_emails() -> dict:
+    """Escanea correos NO LEÍDOS (modo normal, idempotente)."""
+    return _process_emails_core(force_resync=False)
+
+
+def process_emails_force() -> dict:
+    """
+    Re-sincronización forzada: escanea TODOS los correos del buzón
+    (incluyendo ya leídos), limpia logs previos y re-inserta documentos.
+    Útil cuando se borraron registros de la BD y se quiere reimportar.
+    """
+    return _process_emails_core(force_resync=True)

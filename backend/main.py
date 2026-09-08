@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from comparador import comparar_facturas, comparar_facturas_odoo, generar_excel_reporte, generar_excel_reporte_bytes
 from odoo_match import OdooConnector, CredentialManager, _normalizar_clave_odoo, _normalizar_nit_odoo
-from email_parser import process_emails, connect_db
+from email_parser import process_emails, process_emails_force, connect_db
 from ai_auditor import build_odoo_context, run_ai_audit
 from purchase_parser import map_lines_to_odoo, _normalize_desc, _save_corrections_to_history
 from datetime import datetime, timedelta
@@ -508,7 +508,7 @@ def ensure_purchase_tables():
             )
         """)
 
-        # correction_history (aprendizaje automatico)
+        # correction_history (aprendizaje automático)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS correction_history (
                 id SERIAL PRIMARY KEY,
@@ -523,10 +523,25 @@ def ensure_purchase_tables():
             ON correction_history(normalized_desc)
         """)
 
+        # Deduplicar correction_history por si existen registros duplicados antes de crear el índice único
+        cursor.execute("""
+            DELETE FROM correction_history a
+            USING correction_history b
+            WHERE a.id < b.id AND a.normalized_desc = b.normalized_desc
+        """)
+
+        # Crear índice único sobre normalized_desc para soportar INSERT ... ON CONFLICT
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_correction_history_desc_uniq 
+            ON correction_history(normalized_desc)
+        """)
+
         db.commit()
         print("[startup] Tablas aseguradas correctamente (sin DROP).")
     except Exception as e:
         print(f"[startup] Error: {e}")
+        if db:
+            db.rollback()
     finally:
         if db:
             db.close()
@@ -552,6 +567,26 @@ async def sync_invoices_from_email():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error inesperado procesando correos: {str(e)}")
+
+
+@app.post("/sync-emails/force")
+async def sync_invoices_force():
+    """
+    Re-sincronización forzada: escanea TODOS los correos del buzón
+    (incluyendo ya leídos), borra los registros de email_inbox_logs anteriores
+    y hace UPSERT en electronic_documents para reimportar facturas borradas de la BD.
+    Útil cuando se vació la base de datos y se quiere repoblar desde el correo.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        resultado = await loop.run_in_executor(executor, process_emails_force)
+        if resultado.get("status") == "error":
+            raise HTTPException(status_code=500, detail=resultado.get("message"))
+        return resultado
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error inesperado en re-sincronización forzada: {str(e)}")
 
 # ──────────────────────────────────────────────
 # ENDPOINTS DASHBOARD DE AUDITORÍA (FASE 2)
@@ -798,7 +833,7 @@ async def purchase_ai_map(
     """
     db = None
     try:
-        # 1. Leer documento de BD
+        # 1. Leer documento de BD (con bloqueo FOR UPDATE para evitar concurrencia)
         db = connect_db()
         cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -807,6 +842,7 @@ async def purchase_ai_map(
             FROM electronic_documents ed
             LEFT JOIN purchase_review pr ON pr.doc_id = ed.id
             WHERE ed.id = %s
+            FOR UPDATE
         """, (doc_id,))
         doc = cursor.fetchone()
         if not doc:
@@ -832,7 +868,7 @@ async def purchase_ai_map(
                 "total": float(doc.get("total_amount", 0) or 0),
             }]
 
-        # 3. Conectar a Odoo y obtener catálogo de productos (con cache local)
+        # 3. Conectar a Odoo y obtener catálogo de productos (con cache local e invalidación automática)
         manager = CredentialManager()
         creds = manager.decrypt(credentials)
 
@@ -843,14 +879,16 @@ async def purchase_ai_map(
             api_key=creds["api_key"],
         )
 
-        cache_key = _get_catalog_cache_key(creds)
+        catalog_ver = connector.get_catalog_last_update()
+        cache_key = f"{_get_catalog_cache_key(creds)}_{catalog_ver}"
         if cache_key in odoo_catalog_cache:
             odoo_products = odoo_catalog_cache[cache_key]
-            print(f"[ai-map] Cache local catalogo: {len(odoo_products)} productos")
+            print(f"[ai-map] Cache local catalogo (ver: {catalog_ver}): {len(odoo_products)} productos")
         else:
-            odoo_products = connector.search_products()
+            # Solicitar únicamente campos necesarios con un alto límite para optimizar memoria
+            odoo_products = connector.search_products(limit=40000, fields=["id", "name", "default_code"])
             odoo_catalog_cache[cache_key] = odoo_products
-            print(f"[ai-map] Catalogo descargado de Odoo: {len(odoo_products)} productos")
+            print(f"[ai-map] Catalogo descargado de Odoo (ver: {catalog_ver}): {len(odoo_products)} productos")
 
         # 4. Ejecutar mapeo IA
         api_key = groq_key or os.getenv("GROQ_API_KEY", "")
@@ -862,7 +900,7 @@ async def purchase_ai_map(
         # 5. Guardar en purchase_review (crear si no existe)
         #    Verificar concurrencia: si ya existe una OC completada, no sobrescribir
         cursor.execute("""
-            SELECT status FROM purchase_review WHERE doc_id = %s
+            SELECT status FROM purchase_review WHERE doc_id = %s FOR UPDATE
         """, (doc_id,))
         existing = cursor.fetchone()
         if existing and existing["status"] in ("COMPLETED",):
@@ -918,6 +956,16 @@ async def purchase_review(
         db = connect_db()
         cursor = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+        # Bloquear fila para evitar condiciones de carrera
+        cursor.execute("""
+            SELECT status FROM purchase_review WHERE doc_id = %s FOR UPDATE
+        """, (doc_id,))
+        existing = cursor.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="No hay registro de purchase_review para este documento. Ejecuta /api/purchase/ai-map primero.")
+        if existing["status"] == "COMPLETED":
+            raise HTTPException(status_code=409, detail="El documento ya fue completado y tiene una OC generada. No se puede modificar.")
+
         cursor.execute("""
             UPDATE purchase_review
             SET status = %s,
@@ -932,8 +980,6 @@ async def purchase_review(
             doc_id,
         ))
         updated = cursor.fetchone()
-        if not updated:
-            raise HTTPException(status_code=404, detail="No hay registro de purchase_review para este documento. Ejecuta /api/purchase/ai-map primero.")
 
         # Si es correccion, guardar en correction_history para aprendizaje automatico
         if action == "correct" and manual_lines:
@@ -1070,25 +1116,34 @@ async def purchase_create_oc(
         if not partner:
             raise HTTPException(status_code=404, detail=f"Proveedor con NIT {supplier_nit_clean} no encontrado en Odoo.")
 
-        # 5. Preparar líneas para Odoo — validar producto_id y confianza
+        # 5. Preparar líneas para Odoo — validar producto_id
+        #    Si el doc fue CORRECTED o REVIEWED_OK, se confía en el mapeo sin importar
+        #    el valor de confianza almacenado (puede ser 0 en registros previos al fix).
         oc_lines = []
-        sin_producto = 0
-        confianza_baja = 0
-        detalles = []
+        errores = []
+        is_reviewed = doc["review_status"] in ("REVIEWED_OK", "CORRECTED")
+        is_corrected = doc["review_status"] == "CORRECTED"
+
         for i, line in enumerate(lines):
             pid = line.get("producto_id")
-            conf = float(line.get("confianza", 0) or 0)
-            nombre_linea = line.get("producto_nombre") or line.get("descripcion_original") or line.get("descripcion", f"Línea {i+1}")
+            nombre_linea = (
+                line.get("producto_nombre")
+                or line.get("descripcion_original")
+                or line.get("descripcion")
+                or f"Línea {i+1}"
+            )
 
             if not pid:
-                sin_producto += 1
-                detalles.append(f"Línea '{nombre_linea}' sin producto_id")
+                errores.append(f"Línea {i+1} ('{nombre_linea}'): Sin producto asignado (producto_id es nulo)")
                 continue
 
-            if conf < 0.60:
-                confianza_baja += 1
-                detalles.append(f"Línea '{nombre_linea}' con confianza baja ({conf:.0%})")
-                continue
+            # Para documentos revisados/corregidos, la confianza NO bloquea la creación.
+            # El usuario ya validó manualmente o aprobó el mapeo IA.
+            if not is_reviewed:
+                conf = float(line.get("confianza", 0.0) or 0.0)
+                if conf < 0.60:
+                    errores.append(f"Línea {i+1} ('{nombre_linea}'): Confianza muy baja ({conf:.0%}). Usa MAPEAR IA y corrige.")
+                    continue
 
             oc_lines.append({
                 "producto_id": pid,
@@ -1097,16 +1152,9 @@ async def purchase_create_oc(
                 "nombre": nombre_linea,
             })
 
-        if not oc_lines:
-            mensaje = "No se puede crear la OC: "
-            if sin_producto:
-                mensaje += f"{sin_producto} línea(s) sin producto mapeado. "
-            if confianza_baja:
-                mensaje += f"{confianza_baja} línea(s) con confianza < 60%. "
-            mensaje += "Usa el botón MAPEAR IA y corrige las líneas con baja confianza."
-            raise HTTPException(status_code=400, detail=mensaje.strip())
-
-        lineas_omitidas = sin_producto + confianza_baja
+        if errores:
+            mensaje = "No se puede crear la Orden de Compra debido a errores en las líneas:\n" + "\n".join(errores)
+            raise HTTPException(status_code=400, detail=mensaje)
 
         # 6. Crear OC
         reference = f"FACTUMATCH-{doc_number}" if doc_number else f"FACTUMATCH-{doc_id}"
@@ -1141,10 +1189,9 @@ async def purchase_create_oc(
             "partner_name": partner.get("name", ""),
             "total_lineas": len(lines),
             "lineas_procesadas": len(oc_lines),
-            "lineas_omitidas": lineas_omitidas,
+            "lineas_omitidas": 0,
             "state": state,
             "message": f"OC {order.get('name', '')} creada exitosamente." +
-                      (f" {lineas_omitidas} línea(s) omitida(s): " + "; ".join(detalles) + "." if lineas_omitidas else "") +
                       (" Confirmada." if action == "create_and_confirm" else " En estado borrador.")
         }
 
