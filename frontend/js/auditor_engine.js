@@ -39,18 +39,12 @@ async function loadAuditorDashboard() {
   tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:15px;"><div class="btn-loader" style="margin:0 auto;"></div></td></tr>';
 
   try {
-    let url = `${API_URL}/api/dashboard-auditoria`;
     const monthVal = document.getElementById("auditor-filter-month")?.value;
-
-    if (monthVal) {
-      const [y, m] = monthVal.split("-");
-      url += `?month=${m}&year=${y}`;
-    }
-
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("Error en respuesta del servidor");
-
-    const data = await res.json();
+    const [year, month] = monthVal ? monthVal.split("-") : [];
+    const res = await fetch(GAS_URL, { method:"POST", body:JSON.stringify({ action:"getAuditorDashboard", data:{month, year} }) });
+    const response = await res.json();
+    if (!response.success) throw new Error(response.error || "Error en respuesta de Google Sheets");
+    const data = { success:true, ...response.data };
 
     if (data.success) {
       // Update Metrics
@@ -157,12 +151,11 @@ async function readNewEmails() {
   msgDiv.innerHTML = '<span class="t-msg">Conectando a la bandeja de entrada y extrayendo XMLs...</span>';
 
   try {
-    const res = await fetch(`${API_URL}/sync-emails`, {
-      method: "POST"
-    });
-    const data = await res.json();
+    const res = await fetch(GAS_URL, { method:"POST", body:JSON.stringify({ action:"syncAuditorEmails", data:{} }) });
+    const response = await res.json();
+    const data = response.data || response;
 
-    if (res.ok) {
+    if (response.success) {
       const n = data.processed_invoices || 0;
       msgDiv.innerHTML = `<span class="t-ok">✅ Lectura finalizada: ${n} factura(s) importada(s). Revisa si hay nuevas facturas en la tabla.</span>`;
       loadAuditorDashboard();
@@ -202,12 +195,11 @@ async function forceResyncEmails() {
   msgDiv.innerHTML = '<span class="t-msg">⏳ Escaneando TODOS los correos... Por favor espera, esto puede tardar varios minutos.</span>';
 
   try {
-    const res = await fetch(`${API_URL}/sync-emails/force`, {
-      method: "POST"
-    });
-    const data = await res.json();
+    const res = await fetch(GAS_URL, { method:"POST", body:JSON.stringify({ action:"syncAuditorEmails", data:{force:true} }) });
+    const response = await res.json();
+    const data = response.data || response;
 
-    if (res.ok) {
+    if (response.success) {
       const n = data.processed_invoices || 0;
       const errs = data.errors?.length || 0;
       const errMsg = errs > 0 ? `, ${errs} error(es)` : "";

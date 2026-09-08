@@ -27,6 +27,8 @@ function doPost(e) {
       case 'resetPassword': response = resetPassword(params.data.token, params.data.pass); break;
       case 'saveOdooConfig': response = saveOdooConfig(params.data); break;
       case 'getOdooConfig': response = getOdooConfig(); break;
+      case 'getAuditorDashboard': response = getAuditorDashboard(params.data || {}); break;
+      case 'syncAuditorEmails': response = syncAuditorEmails(params.data || {}); break;
       default: throw new Error('Acción no reconocida');
     }
 
@@ -94,7 +96,52 @@ function initDB() {
     sheetC.getRange(1, 1, 1, 2).setBackground("#1a1f2e").setFontColor("#00e5ff").setFontWeight("bold");
   }
 
+  ensureAuditorSheet_(ss);
+
   return "Base de datos actualizada correctamente";
+}
+
+function ensureAuditorSheet_(ss) {
+  let sheet = ss.getSheetByName("DocumentosElectronicos");
+  const headers = ["CUFE", "Documento", "NIT", "Proveedor", "Fecha", "Moneda", "Subtotal", "IVA", "Total", "Estado_ERP", "Referencia_ERP", "Message_ID", "Actualizado_En"];
+  if (!sheet) {
+    sheet = ss.insertSheet("DocumentosElectronicos");
+    sheet.appendRow(headers);
+    sheet.getRange(1, 1, 1, headers.length).setBackground("#1a1f2e").setFontColor("#00e5ff").setFontWeight("bold");
+  }
+  return sheet;
+}
+
+function getAuditorDashboard(data) {
+  const sheet = ensureAuditorSheet_(SpreadsheetApp.openById(SPREADSHEET_ID));
+  const rows = sheet.getDataRange().getValues().slice(1);
+  const month = data.month ? Number(data.month) : null;
+  const year = data.year ? Number(data.year) : null;
+  const docs = rows.map(r => ({ cufe:r[0], document_number:r[1], supplier_nit:r[2], supplier_name:r[3], issue_date:r[4], currency:r[5], tax_exclusive_amount:r[6], tax_amount:r[7], total_amount:r[8], erp_sync_status:r[9] || "PENDING", erp_reference_id:r[10] || "" }))
+    .filter(d => !month || (new Date(d.issue_date).getMonth() + 1 === month && new Date(d.issue_date).getFullYear() === year));
+  const faltantes = docs.filter(d => d.erp_sync_status !== "MATCHED");
+  return { metrics: { total_recibidas:docs.length, total_cruzadas:docs.length-faltantes.length, total_faltantes:faltantes.length, accuracy:docs.length ? Math.round((docs.length-faltantes.length)*1000/docs.length)/10 : 0 }, faltantes:faltantes };
+}
+
+function syncAuditorEmails(data) {
+  const force = Boolean(data.force);
+  const sheet = ensureAuditorSheet_(SpreadsheetApp.openById(SPREADSHEET_ID));
+  const existing = sheet.getDataRange().getValues().slice(1).map(r => String(r[0]));
+  const threads = GmailApp.search(force ? 'has:attachment' : 'is:unread has:attachment', 0, 100);
+  let imported = 0;
+  threads.forEach(thread => thread.getMessages().forEach(message => message.getAttachments().forEach(att => {
+    const blobs = /\.zip$/i.test(att.getName()) ? Utilities.unzip(att.copyBlob()) : [att];
+    blobs.forEach(blob => {
+    if (!/\.xml$/i.test(blob.getName())) return;
+    const xml = blob.getDataAsString();
+    const value = tag => { const m = xml.match(new RegExp('<(?:\\w+:)?' + tag + '[^>]*>([^<]+)', 'i')); return m ? m[1].trim() : ''; };
+    const cufe = value('UUID');
+    if (!cufe || existing.indexOf(cufe) !== -1) return;
+    sheet.appendRow([cufe, value('ID'), value('CompanyID'), value('RegistrationName'), value('IssueDate'), value('DocumentCurrencyCode') || 'COP', value('LineExtensionAmount'), value('TaxAmount'), value('PayableAmount'), 'PENDING', '', message.getId(), new Date()]);
+    existing.push(cufe); imported++;
+    });
+  })));
+  return { processed_invoices:imported, message: imported + ' factura(s) importada(s) desde Gmail.' };
 }
 
 /**
