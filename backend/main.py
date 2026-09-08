@@ -32,6 +32,7 @@ app.add_middleware(
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = "llama-3.3-70b-specdec"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ── Validación de ENCRYPTION_KEY (requerida) ──
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
@@ -1270,3 +1271,103 @@ async def run_ai_checklist(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en Auditor IA: {str(e)}")
+
+
+# ──────────────────────────────────────────────
+# DIAGNÓSTICO DE CONECTIVIDAD CON GROQ
+# ──────────────────────────────────────────────
+
+def _sanitize_groq_error(text: str, api_key: str) -> str:
+    """Elimina secretos de un mensaje de error antes de exponerlo."""
+    safe = text or ""
+    if api_key and len(api_key) > 4:
+        safe = safe.replace(api_key, "***")
+    # Por defensa, ocultar cualquier patrón de key gsk_
+    safe = re.sub(r"gsk_[A-Za-z0-9]{8,}", "gsk_***", safe)
+    return safe.strip()
+
+
+@app.get("/api/ai/test-groq")
+async def test_groq():
+    """
+    Prueba la conectividad Factu Match → Groq con la configuración desplegada.
+
+    Devuelve un JSON estructurado que identifica la etapa exacta de la falla:
+      - "configuration": GROQ_API_KEY ausente
+      - "network": timeout, DNS o error de conexión
+      - "groq": error HTTP de Groq (400, 401, 403, 429, 5xx...)
+      - "success": respuesta válida
+
+    NUNCA devuelve la API key. Solo los últimos 4 caracteres para identificación.
+    """
+    api_key = GROQ_API_KEY or os.getenv("GROQ_API_KEY", "")
+    key_last4 = api_key[-4:] if len(api_key) >= 4 else ""
+
+    base: dict = {
+        "success": False,
+        "stage": "unknown",
+        "model": GROQ_MODEL,
+    }
+    if key_last4:
+        base["key_last4"] = f"...{key_last4}"
+
+    if not api_key:
+        base["stage"] = "configuration"
+        base["error"] = "GROQ_API_KEY no está configurada como variable de entorno."
+        return base
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": "Responde únicamente: GROQ_OK"}],
+        "max_tokens": 10,
+        "temperature": 0,
+    }
+
+    try:
+        response = httpx.post(
+            GROQ_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        response.raise_for_status()
+    except httpx.TimeoutException as e:
+        base["stage"] = "network"
+        base["error"] = f"Timeout conectando a Groq: {_sanitize_groq_error(str(e), api_key)}"
+        return base
+    except httpx.ConnectError as e:
+        base["stage"] = "network"
+        base["error"] = f"Error de conexión con Groq (DNS/red): {_sanitize_groq_error(str(e), api_key)}"
+        return base
+    except httpx.NetworkError as e:
+        base["stage"] = "network"
+        base["error"] = f"Error de red con Groq: {_sanitize_groq_error(str(e), api_key)}"
+        return base
+    except httpx.HTTPStatusError as e:
+        base["stage"] = "groq"
+        base["status_code"] = e.response.status_code
+        body_safe = _sanitize_groq_error(e.response.text or "", api_key)[:400]
+        base["error"] = f"HTTP {e.response.status_code}: {body_safe}"
+        return base
+
+    try:
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise TypeError("content no es string")
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+        base["stage"] = "groq"
+        base["status_code"] = response.status_code
+        base["error"] = "Respuesta HTTP 200 con estructura inesperada de Groq."
+        return base
+
+    return {
+        "success": True,
+        "stage": "success",
+        "status_code": response.status_code,
+        "model": GROQ_MODEL,
+        "message": content.strip(),
+    }
