@@ -255,16 +255,16 @@ class OdooConnector:
                 nombre = inv["partner_id"][1]
 
             # Número de factura del proveedor:
-            # Cadena de prioridad para localización colombiana Odoo 14-19:
-            # 1. l10n_latam_document_number  → número oficial del documento DIAN
-            # 2. ref                         → referencia manual ingresada por el usuario
-            # 3. name                        → secuencia interna de Odoo (último recurso)
-            latam_doc = inv.get("l10n_latam_document_number") or ""
+            # La referencia del proveedor es el dato que se contrasta contra DIAN,
+            # por eso `ref` es la fuente principal.
+            # Cadena de prioridad:
+            # 1. ref                         → referencia de account.move
+            # 2. name                        → secuencia interna de Odoo (último recurso)
             ref_doc   = inv.get("ref") or ""
             name_doc  = inv.get("name") or ""
 
             # Usar el primero no vacío de la cadena de prioridad
-            factura_original = latam_doc.strip() or ref_doc.strip() or name_doc.strip()
+            factura_original = ref_doc.strip() or name_doc.strip()
             factura_clave = _normalizar_clave_odoo(factura_original)
 
             # Fecha
@@ -602,11 +602,13 @@ def _normalizar_clave_odoo(factura_str: str) -> str:
         folio_limpio = str(int(folio_limpio)) if folio_limpio else partes[1]
         return f"{prefijo}{folio_limpio}"
     else:
-        # Sin separador — intentar detectar prefijo alfabético
+        # Sin separador — conservar los dígitos literalmente. Un prefijo puede
+        # incluir números: "IM05-53299" en DIAN llega como "IM0553299" en ref.
+        # Convertir toda la parte numérica a int eliminaría el 0 de "IM05".
         match = re.match(r"^([A-Za-z]+)(\d+)$", factura_str.strip())
         if match:
             prefijo = match.group(1).upper()
-            folio = str(int(match.group(2)))
+            folio = match.group(2)
             return f"{prefijo}{folio}"
         # Solo números
         solo_nums = re.sub(r"[^0-9]", "", factura_str)

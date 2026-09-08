@@ -183,6 +183,15 @@ class TestNormalizacionDeFormatos(unittest.TestCase):
         self.assertEqual(normalizar_nit(""), "")
         self.assertEqual(normalizar_nit(float("nan")), "")
 
+    def test_nit_sin_dv_en_dian_coincide_con_nit_con_dv_en_erp(self):
+        """DIAN puede omitir el DV que Odoo conserva en res.partner.vat."""
+        dian = df_dian([make_dian_row("890908822", "IM36", "66920")])
+        siesa = df_siesa([make_siesa_row("8909088225", "IM3666920")])
+
+        resultado = _ejecutar_comparacion(dian, siesa)
+
+        self.assertEqual(resultado["resumen_general"]["total_faltantes"], 0)
+
 
 class TestNormalizarClave(unittest.TestCase):
     """Tests directos sobre la función normalizar_clave."""

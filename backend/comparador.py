@@ -90,6 +90,17 @@ def normalizar_nit(nit) -> str:
     return re.sub(r"[^0-9]", "", str(nit)).strip()
 
 
+def nits_coinciden(nit_dian: str, nit_erp: str) -> bool:
+    """Compara NITs aun cuando una fuente omite únicamente el dígito de verificación."""
+    nit_dian = str(nit_dian or "")
+    nit_erp = str(nit_erp or "")
+    return (
+        nit_dian == nit_erp
+        or (nit_erp.startswith(nit_dian) and len(nit_erp) - len(nit_dian) == 1)
+        or (nit_dian.startswith(nit_erp) and len(nit_dian) - len(nit_erp) == 1)
+    )
+
+
 # ──────────────────────────────────────────────
 # LECTURA DE ARCHIVOS
 # ──────────────────────────────────────────────
@@ -200,7 +211,11 @@ def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame, limit: 
     Acepta DataFrames ya normalizados de cualquier fuente (Siesa Excel u Odoo API).
     limit/offset: paginación sobre la lista de proveedores (0 = sin paginar).
     """
-    siesa_index = set(zip(df_siesa["nit"], df_siesa["clave"]))
+    # Indexar por factura primero: DIAN puede exportar el NIT sin DV y Odoo
+    # normalmente lo conserva (p. ej. 890908822 vs 890908822-5).
+    siesa_por_clave = {}
+    for _, factura_siesa in df_siesa.iterrows():
+        siesa_por_clave.setdefault(factura_siesa["clave"], []).append(factura_siesa["nit"])
 
     proveedores = {}
     for _, row in df_dian.iterrows():
@@ -220,7 +235,10 @@ def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame, limit: 
 
         proveedores[nit]["facturas_dian"].append(folio_original)
 
-        en_siesa = (nit, clave) in siesa_index
+        en_siesa = any(
+            nits_coinciden(nit, nit_siesa)
+            for nit_siesa in siesa_por_clave.get(clave, [])
+        )
 
         if en_siesa:
             proveedores[nit]["encontradas"].append(folio_original)

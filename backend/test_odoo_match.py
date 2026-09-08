@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import xmlrpc.client
 
-from odoo_match import OdooConnector, OdooAuthError, OdooConnectionError
+from odoo_match import OdooConnector, OdooAuthError, OdooConnectionError, _normalizar_clave_odoo
 
 
 class TestOdoo404Error(unittest.TestCase):
@@ -90,6 +90,18 @@ class TestOdooAuthErrors(unittest.TestCase):
             connector.authenticate()
 
         self.assertIn("No se pudo conectar a Odoo", str(ctx.exception))
+
+
+class TestReferenciaProveedor(unittest.TestCase):
+    def test_referencia_iglu_sin_guion_conserva_el_prefijo_numerico(self):
+        """IM36-66920 de DIAN y IM3666920 de account.move.ref son la misma factura."""
+        self.assertEqual(
+            _normalizar_clave_odoo("IM3666920"),
+            _normalizar_clave_odoo("IM36-66920"),
+        )
+
+    def test_referencia_sin_guion_no_elimina_cero_del_prefijo(self):
+        self.assertEqual(_normalizar_clave_odoo("IM0553299"), "IM0553299")
 
 
 if __name__ == "__main__":
