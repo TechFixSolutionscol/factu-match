@@ -18,6 +18,7 @@ from comparador import (
     _ejecutar_comparacion,
     normalizar_clave,
     normalizar_nit,
+    normalizar_total,
 )
 
 
@@ -239,6 +240,27 @@ class TestCasosCombinados(unittest.TestCase):
         resultado = _ejecutar_comparacion(dian, siesa)
         # 3 de 4 = 75%
         self.assertEqual(resultado["resumen_general"]["porcentaje_completitud"], 75.0)
+
+
+class TestPosiblesDuplicados(unittest.TestCase):
+    def test_total_colombiano_se_normaliza(self):
+        self.assertEqual(normalizar_total("$ 1.234.567,00"), 1234567.0)
+
+    def test_misma_referencia_nit_y_total_se_reporta_como_sospecha(self):
+        filas = [
+            make_dian_row("900111", "FAC", "123", fecha="2026-09-01"),
+            make_dian_row("900111", "FAC", "123", fecha="2026-09-02"),
+        ]
+        for fila in filas:
+            fila["total"] = 150000.0
+
+        resultado = _ejecutar_comparacion(df_dian(filas), df_siesa([]))
+
+        self.assertEqual(resultado["resumen_general"]["total_posibles_duplicados"], 1)
+        sospecha = resultado["posibles_duplicados"][0]
+        self.assertEqual(sospecha["factura"], "FAC-123")
+        self.assertEqual(sospecha["total"], 150000.0)
+        self.assertEqual(sospecha["cantidad"], 2)
 
 
 if __name__ == "__main__":

@@ -90,6 +90,31 @@ def normalizar_nit(nit) -> str:
     return re.sub(r"[^0-9]", "", str(nit)).strip()
 
 
+def normalizar_total(valor):
+    """Convierte importes colombianos o internacionales a un número comparable."""
+    if valor is None or pd.isna(valor) or str(valor).strip().lower() in ("", "nan", "none"):
+        return None
+
+    texto = re.sub(r"[^0-9,.-]", "", str(valor)).strip()
+    if not texto:
+        return None
+    if "," in texto and "." in texto:
+        if texto.rfind(",") > texto.rfind("."):
+            texto = texto.replace(".", "").replace(",", ".")
+        else:
+            texto = texto.replace(",", "")
+    elif "," in texto:
+        entero, decimal = texto.rsplit(",", 1)
+        texto = f"{entero.replace(',', '')}.{decimal}" if len(decimal) <= 2 else texto.replace(",", "")
+    elif "." in texto:
+        entero, decimal = texto.rsplit(".", 1)
+        texto = f"{entero.replace('.', '')}.{decimal}" if len(decimal) <= 2 else texto.replace(".", "")
+    try:
+        return round(float(texto), 2)
+    except ValueError:
+        return None
+
+
 def nits_coinciden(nit_dian: str, nit_erp: str) -> bool:
     """Compara NITs aun cuando una fuente omite únicamente el dígito de verificación."""
     nit_dian = str(nit_dian or "")
@@ -143,8 +168,12 @@ def leer_dian(contenido: bytes) -> pd.DataFrame:
     if "Tipo de documento" in df.columns:
         df = df[df["Tipo de documento"].isin(TIPOS_FACTURA)]
 
-    df = df[columnas_requeridas].copy()
-    df.columns = ["folio", "prefijo", "nit", "nombre","fecha"]  
+    columnas = columnas_requeridas + (["Total"] if "Total" in df.columns else [])
+    df = df[columnas].copy()
+    df.columns = ["folio", "prefijo", "nit", "nombre", "fecha"] + (["total"] if "Total" in columnas else [])
+    if "total" not in df.columns:
+        df["total"] = None
+    df["total"] = df["total"].apply(normalizar_total)
 
     df["nit"] = df["nit"].apply(normalizar_nit)
 
@@ -182,8 +211,12 @@ def leer_siesa(contenido: bytes) -> pd.DataFrame:
         if col not in df.columns:
             raise ValueError(f"El archivo ERP no tiene la columna requerida: '{col}'")
 
-    df = df[columnas_requeridas].copy()
-    df.columns = ["nit", "docto", "nombre"]
+    columnas = columnas_requeridas + (["Total"] if "Total" in df.columns else [])
+    df = df[columnas].copy()
+    df.columns = ["nit", "docto", "nombre"] + (["total"] if "Total" in columnas else [])
+    if "total" not in df.columns:
+        df["total"] = None
+    df["total"] = df["total"].apply(normalizar_total)
 
     # Filtrar filas sin NIT válido (subtotales y separadores de Siesa)
     df["nit"] = df["nit"].apply(normalizar_nit)
@@ -204,6 +237,26 @@ def leer_siesa(contenido: bytes) -> pd.DataFrame:
 # ──────────────────────────────────────────────
 # COMPARACIÓN PRINCIPAL
 # ──────────────────────────────────────────────
+
+def _detectar_posibles_duplicados(df: pd.DataFrame, fuente: str) -> list:
+    """Detecta repeticiones por proveedor, referencia y total sin afectar el match."""
+    if df.empty or "total" not in df.columns:
+        return []
+    registros = df.dropna(subset=["nit", "clave", "total"]).copy()
+    if registros.empty:
+        return []
+    registros["total"] = registros["total"].round(2)
+    duplicados = []
+    for (nit, clave, total), grupo in registros.groupby(["nit", "clave", "total"]):
+        if len(grupo) < 2:
+            continue
+        factura = grupo["folio_original"].iloc[0] if "folio_original" in grupo.columns else grupo["docto_original"].iloc[0]
+        fechas = sorted({str(fecha) for fecha in grupo.get("fecha", []) if pd.notna(fecha)})
+        duplicados.append({
+            "fuente": fuente, "nit": str(nit), "nombre": str(grupo["nombre"].iloc[0]),
+            "factura": str(factura), "total": float(total), "cantidad": len(grupo), "fechas": fechas,
+        })
+    return duplicados
 
 def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame, limit: int = 0, offset: int = 0) -> dict:
     """
@@ -245,7 +298,8 @@ def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame, limit: 
         else:
             proveedores[nit]["faltantes"].append({
                 "factura": folio_original,
-                "fecha": str(row["fecha"]) if pd.notna(row["fecha"]) else "Sin fecha"
+                "fecha": str(row["fecha"]) if pd.notna(row["fecha"]) else "Sin fecha",
+                "total": row.get("total"),
             })
 
     lista_proveedores = []
@@ -270,15 +324,18 @@ def _ejecutar_comparacion(df_dian: pd.DataFrame, df_siesa: pd.DataFrame, limit: 
     total_siesa = sum(p["total_en_siesa"] for p in lista_proveedores)
     total_faltantes = sum(p["total_faltantes"] for p in lista_proveedores)
 
+    posibles_duplicados = _detectar_posibles_duplicados(df_dian, "DIAN") + _detectar_posibles_duplicados(df_siesa, "ERP")
     return {
         "resumen_general": {
             "total_proveedores": total_proveedores,
             "total_dian": total_dian,
             "total_en_siesa": total_siesa,
             "total_faltantes": total_faltantes,
+            "total_posibles_duplicados": len(posibles_duplicados),
             "porcentaje_completitud": round((total_siesa / total_dian * 100), 1) if total_dian > 0 else 0
         },
         "proveedores": lista_proveedores,
+        "posibles_duplicados": posibles_duplicados,
         "narrativa": ""
     }
 
@@ -289,13 +346,15 @@ def _odoo_to_siesa_df(facturas_odoo: list) -> pd.DataFrame:
     que produce leer_siesa(), para que _ejecutar_comparacion() funcione sin cambios.
     """
     if not facturas_odoo:
-        return pd.DataFrame(columns=["nit", "clave", "nombre", "docto_original"])
+        return pd.DataFrame(columns=["nit", "clave", "nombre", "docto_original", "fecha", "total"])
     rows = [
         {
             "nit": f["nit"],
             "clave": f["factura_clave"],
             "nombre": f["nombre"],
             "docto_original": f["factura_original"],
+            "fecha": f.get("fecha"),
+            "total": normalizar_total(f.get("monto")),
         }
         for f in facturas_odoo
         if f.get("nit") and f.get("factura_clave")
@@ -346,6 +405,8 @@ def _build_workbook(resultado: dict) -> Workbook:
     _estilo_detalle(ws_detalle, resultado)
     ws_faltantes = wb.create_sheet("Facturas Faltantes")
     _estilo_faltantes(ws_faltantes, resultado)
+    ws_duplicados = wb.create_sheet("Posibles Duplicados")
+    _estilo_duplicados(ws_duplicados, resultado)
     return wb
 
 
@@ -469,10 +530,10 @@ def _estilo_detalle(ws, resultado):
 
 
 def _estilo_faltantes(ws, resultado):
-    _color_header(ws, 1, 1, 4, "FACTURAS FALTANTES EN ERP", color="C00000")
+    _color_header(ws, 1, 1, 5, "FACTURAS FALTANTES EN ERP", color="C00000")
 
-    encabezados = ["NIT", "Nombre proveedor", "Factura faltante", "Prefijo-Folio"]
-    col_widths = [16, 42, 20, 16]
+    encabezados = ["NIT", "Nombre proveedor", "Factura faltante", "Prefijo-Folio", "Total DIAN"]
+    col_widths = [16, 42, 20, 16, 18]
 
     fila = 3
     for col, (enc, ancho) in enumerate(zip(encabezados, col_widths), start=1):
@@ -489,18 +550,51 @@ def _estilo_faltantes(ws, resultado):
         for f_obj in p["faltantes"]:
             color_fila = "FCE4D6" if i % 2 == 0 else "FFFFFF"
             fill = PatternFill("solid", fgColor=color_fila)
-            valores = [p["nit"], p["nombre"], f_obj["factura"], f_obj["factura"]]
+            valores = [p["nit"], p["nombre"], f_obj["factura"], f_obj["factura"], f_obj.get("total")]
             for col, val in enumerate(valores, start=1):
                 c = ws.cell(row=fila, column=col, value=val)
                 c.font = Font(name="Arial", size=9)
                 c.fill = fill
                 c.border = _borde()
+                if col == 5 and val is not None:
+                    c.number_format = '#,##0.00'
             fila += 1
             i += 1
 
     if fila == 4:
-        ws.merge_cells("A4:D4")
+        ws.merge_cells("A4:E4")
         c = ws.cell(row=4, column=1, value="✅ No hay facturas faltantes. ¡Todos los registros están completos!")
         c.font = Font(name="Arial", size=10, bold=True, color="375623")
         c.fill = PatternFill("solid", fgColor="E2EFDA")
         c.alignment = Alignment(horizontal="center")
+
+
+def _estilo_duplicados(ws, resultado):
+    _color_header(ws, 1, 1, 7, "POSIBLES FACTURAS DUPLICADAS", color="C00000")
+    encabezados = ["Fuente", "NIT", "Proveedor", "Factura", "Total", "Registros", "Fechas"]
+    anchos = [12, 16, 38, 20, 18, 12, 28]
+    for col, (enc, ancho) in enumerate(zip(encabezados, anchos), start=1):
+        celda = ws.cell(row=3, column=col, value=enc)
+        celda.font = Font(bold=True, name="Arial", size=9, color="FFFFFF")
+        celda.fill = PatternFill("solid", fgColor="C00000")
+        celda.alignment = Alignment(horizontal="center")
+        celda.border = _borde()
+        ws.column_dimensions[get_column_letter(col)].width = ancho
+
+    duplicados = resultado.get("posibles_duplicados", [])
+    for fila, item in enumerate(duplicados, start=4):
+        valores = [item["fuente"], item["nit"], item["nombre"], item["factura"], item["total"], item["cantidad"], ", ".join(item["fechas"])]
+        for col, valor in enumerate(valores, start=1):
+            celda = ws.cell(row=fila, column=col, value=valor)
+            celda.font = Font(name="Arial", size=9)
+            celda.fill = PatternFill("solid", fgColor="FFF2CC")
+            celda.border = _borde()
+            if col == 5:
+                celda.number_format = '#,##0.00'
+
+    if not duplicados:
+        ws.merge_cells("A4:G4")
+        celda = ws.cell(row=4, column=1, value="✅ No se detectaron posibles duplicados con referencia y total iguales.")
+        celda.font = Font(name="Arial", size=10, bold=True, color="375623")
+        celda.fill = PatternFill("solid", fgColor="E2EFDA")
+        celda.alignment = Alignment(horizontal="center")

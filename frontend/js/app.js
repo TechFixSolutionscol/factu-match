@@ -694,10 +694,21 @@ function mostrarResultado(data) {
   document.getElementById("m-dian").textContent = r.total_dian.toLocaleString();
   document.getElementById("m-siesa").textContent = r.total_en_siesa.toLocaleString();
   document.getElementById("m-faltantes").textContent = r.total_faltantes.toLocaleString();
+  const duplicados = data.posibles_duplicados || [];
+  document.getElementById("m-duplicados").textContent = duplicados.length.toLocaleString();
   document.getElementById("pct-completitud").textContent = r.porcentaje_completitud + "%";
   document.getElementById("pct-barra").textContent = r.porcentaje_completitud + "%";
   document.getElementById("barra-fill").style.width = r.porcentaje_completitud + "%";
   document.getElementById("narrativa-texto").textContent = data.narrativa;
+
+  const panelDuplicados = document.getElementById("panel-duplicados");
+  const listaDuplicados = document.getElementById("lista-duplicados");
+  panelDuplicados.style.display = duplicados.length ? "block" : "none";
+  listaDuplicados.innerHTML = duplicados.map(d => `
+    <div class="factura-tag factura-faltante" style="margin:3px; max-width:none;">
+      <strong>${d.fuente}: ${d.factura}</strong>
+      <span class="factura-fecha">NIT ${d.nit} · ${d.cantidad} registros · Total: ${Number(d.total).toLocaleString('es-CO', { style: 'currency', currency: 'COP' })}${d.fechas?.length ? ` · ${d.fechas.join(', ')}` : ''}</span>
+    </div>`).join("");
   
   const lista = document.getElementById("lista-proveedores");
   lista.innerHTML = "";
@@ -715,7 +726,7 @@ function mostrarResultado(data) {
         </div>
       </div>
       <div class="proveedor-detalle" id="detalle-${i}">
-        ${p.faltantes.length > 0 ? `<div class="seccion-label">// FALTANTES</div><div class="facturas-grid">${p.faltantes.map(f=>`<span class="factura-tag factura-faltante">${f.factura}<span class="factura-fecha">${f.fecha}</span></span>`).join("")}</div>` : ""}
+        ${p.faltantes.length > 0 ? `<div class="seccion-label">// FALTANTES</div><div class="facturas-grid">${p.faltantes.map(f=>`<span class="factura-tag factura-faltante">${f.factura}<span class="factura-fecha">${f.fecha}${f.total != null ? ` · ${Number(f.total).toLocaleString('es-CO', { style: 'currency', currency: 'COP' })}` : ''}</span></span>`).join("")}</div>` : ""}
         ${p.encontradas.length > 0 ? `<div class="seccion-label">// ENCONTRADAS</div><div class="facturas-grid">${p.encontradas.map(f=>`<span class="factura-tag factura-ok">${f}</span>`).join("")}</div>` : ""}
       </div>`;
     lista.appendChild(card);
