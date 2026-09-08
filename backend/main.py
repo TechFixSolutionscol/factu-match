@@ -31,7 +31,7 @@ app.add_middleware(
 )
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "llama-3.3-70b-specdec"
 
 # ── Validación de ENCRYPTION_KEY (requerida) ──
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
