@@ -25,9 +25,14 @@ function renderAnomalies(anomalies) {
     card.style.padding = '0.75rem';
     card.style.margin = '0.5rem';
     card.style.background = 'rgba(255,255,255,0.02)';
+    const badgeColor = a.gravedad === 'alta' ? '#ef4444' : a.gravedad === 'media' ? '#f59e0b' : '#10b981';
     card.innerHTML = `
-      <strong>${a.title || 'Anomalía'}</strong><br/>
-      <small>${a.description || ''}</small>
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.4rem;">
+        <strong style="font-size:0.85rem; color:var(--text);">${a.titulo || 'Anomalía'}</strong>
+        <span style="background:${badgeColor}22; color:${badgeColor}; border:1px solid ${badgeColor}44; padding:2px 6px; border-radius:4px; font-size:0.6rem; text-transform:uppercase; font-weight:bold;">${a.gravedad || 'info'}</span>
+      </div>
+      <p style="font-size:0.75rem; color:var(--text-mid); margin:0.3rem 0; line-height:1.3;">${a.hallazgo || ''}</p>
+      ${a.recomendacion ? `<div style="font-size:0.7rem; color:var(--cyan); margin-top:0.4rem; border-top:1px dashed var(--border); padding-top:0.4rem;">💡 <strong>Recomendación:</strong> ${a.recomendacion}</div>` : ''}
     `;
     resultsContainer.appendChild(card);
   });

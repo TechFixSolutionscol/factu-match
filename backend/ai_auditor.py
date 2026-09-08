@@ -166,8 +166,11 @@ Responde SOLO con el arreglo JSON."""
         "max_tokens": 2000
     }
 
-    response = httpx.post(GROQ_API_URL, headers=headers, json=payload, timeout=60)
-    response.raise_for_status()
+    try:
+        response = httpx.post(GROQ_API_URL, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(f"Client error '{exc.response.status_code} {exc.response.reason_phrase}' for url '{exc.request.url}': {exc.response.text}") from exc
 
     raw_content = response.json()["choices"][0]["message"]["content"].strip()
 

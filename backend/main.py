@@ -1252,8 +1252,8 @@ async def run_ai_checklist(
         # Extraer contexto contable de Odoo
         context = build_odoo_context(connector, date_from, date_to)
 
-        # Resolver API key: formulario > variable de entorno
-        api_key = groq_key or GROQ_API_KEY
+        # Resolver API key: formulario > variable global > os.getenv direct
+        api_key = groq_key or GROQ_API_KEY or os.getenv("GROQ_API_KEY", "")
         if not api_key:
             raise HTTPException(status_code=400,
                 detail="GROQ_API_KEY no configurada. Defínela como variable de entorno en Render o pásala por formulario.")
