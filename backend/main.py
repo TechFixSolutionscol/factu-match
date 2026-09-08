@@ -21,7 +21,7 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from cachetools import TTLCache
 load_dotenv()
-app = FastAPI(title="Comparador Facturas DIAN vs Siesa")
+app = FastAPI(title="Comparador Facturas DIAN vs ERP")
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,7 +66,7 @@ async def auth_middleware(request, call_next):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "Comparador DIAN vs Siesa activo"}
+    return {"status": "ok", "mensaje": "Comparador DIAN vs ERP activo"}
 
 
 @app.post("/comparar")
@@ -77,7 +77,7 @@ async def comparar(
     offset: int = Form(0),
 ):
     try:
-        for name, f in [("DIAN", dian), ("Siesa", siesa)]:
+        for name, f in [("DIAN", dian), ("ERP", siesa)]:
             if f.size and f.size > MAX_FILE_SIZE:
                 raise HTTPException(status_code=413, detail=f"Archivo {name} demasiado grande ({f.size / 1024 / 1024:.1f} MB). Máximo: {MAX_FILE_SIZE / 1024 / 1024:.0f} MB.")
 
@@ -107,7 +107,7 @@ async def descargar_reporte(
     siesa: UploadFile = File(...),
 ):
     try:
-        for name, f in [("DIAN", dian), ("Siesa", siesa)]:
+        for name, f in [("DIAN", dian), ("ERP", siesa)]:
             if f.size and f.size > MAX_FILE_SIZE:
                 raise HTTPException(status_code=413, detail=f"Archivo {name} demasiado grande.")
 
@@ -361,7 +361,7 @@ async def generar_narrativa_groq(resultado: dict) -> str:
 
     resumen = construir_resumen_para_ia(resultado)
 
-    prompt = f"""Eres un asistente contable. Analiza este resumen de comparación de facturas entre la DIAN y el sistema Siesa, y genera un informe claro y profesional en español.
+    prompt = f"""Eres un asistente contable. Analiza este resumen de comparación de facturas entre la DIAN y el ERP, y genera un informe claro y profesional en español.
 
 El informe debe:
 1. Empezar con un resumen general (total proveedores, total facturas DIAN, total encontradas, total faltantes)
@@ -403,15 +403,15 @@ def construir_resumen_para_ia(resultado: dict) -> str:
     lineas.append(f"RESUMEN GENERAL:")
     lineas.append(f"- Total proveedores analizados: {r['total_proveedores']}")
     lineas.append(f"- Total facturas en DIAN: {r['total_dian']}")
-    lineas.append(f"- Total encontradas en Siesa: {r['total_en_siesa']}")
-    lineas.append(f"- Total faltantes en Siesa: {r['total_faltantes']}")
+    lineas.append(f"- Total encontradas en ERP: {r['total_en_siesa']}")
+    lineas.append(f"- Total faltantes en ERP: {r['total_faltantes']}")
     lineas.append("")
     lineas.append("DETALLE POR PROVEEDOR:")
 
     for p in resultado["proveedores"]:
         lineas.append(f"\nProveedor: {p['nombre']} (NIT: {p['nit']})")
         lineas.append(f"  - Facturas en DIAN: {p['total_dian']}")
-        lineas.append(f"  - Encontradas en Siesa: {p['total_en_siesa']}")
+        lineas.append(f"  - Encontradas en ERP: {p['total_en_siesa']}")
         lineas.append(f"  - Faltantes: {p['total_faltantes']}")
         if p["faltantes"]:
             lineas.append(f"  - Facturas faltantes: {', '.join(f['factura'] for f in p['faltantes'])}")
@@ -422,19 +422,19 @@ def construir_resumen_para_ia(resultado: dict) -> str:
 def generar_narrativa_local(resultado: dict) -> str:
     r = resultado["resumen_general"]
     lineas = []
-    lineas.append("=== INFORME DE COMPARACIÓN DIAN vs SIESA ===\n")
+    lineas.append("=== INFORME DE COMPARACIÓN DIAN vs ERP ===\n")
     lineas.append(f"Se analizaron {r['total_proveedores']} proveedores.")
     lineas.append(f"La DIAN reporta {r['total_dian']} facturas en total.")
-    lineas.append(f"En Siesa se encontraron {r['total_en_siesa']} facturas.")
+    lineas.append(f"En el ERP se encontraron {r['total_en_siesa']} facturas.")
 
     if r["total_faltantes"] == 0:
-        lineas.append("✅ Todas las facturas están registradas en Siesa. ¡Excelente gestión!")
+        lineas.append("✅ Todas las facturas están registradas en el ERP. ¡Excelente gestión!")
     else:
-        lineas.append(f"⚠️ Faltan {r['total_faltantes']} facturas por registrar en Siesa.\n")
+        lineas.append(f"⚠️ Faltan {r['total_faltantes']} facturas por registrar en el ERP.\n")
         for p in resultado["proveedores"]:
             if p["faltantes"]:
                 lineas.append(f"📌 {p['nombre']} (NIT: {p['nit']})")
-                lineas.append(f"   DIAN: {p['total_dian']} facturas | Siesa: {p['total_en_siesa']} | Faltan: {p['total_faltantes']}")
+                lineas.append(f"   DIAN: {p['total_dian']} facturas | ERP: {p['total_en_siesa']} | Faltan: {p['total_faltantes']}")
                 lineas.append(f"   Facturas faltantes: {', '.join(f['factura'] for f in p['faltantes'])}")
 
     return "\n".join(lineas)

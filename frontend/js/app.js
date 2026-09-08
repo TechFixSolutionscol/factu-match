@@ -570,7 +570,7 @@ function renderCharts(data) {
       labels: labels,
       datasets: [
         { label: 'DIAN', data: dianData, backgroundColor: 'rgba(0, 229, 255, 0.4)', borderColor: '#00e5ff', borderWidth: 1 },
-        { label: 'SIESA', data: siesaData, backgroundColor: 'rgba(0, 230, 118, 0.4)', borderColor: '#00e676', borderWidth: 1 }
+        { label: 'ERP', data: siesaData, backgroundColor: 'rgba(0, 230, 118, 0.4)', borderColor: '#00e676', borderWidth: 1 }
       ]
     },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8892aa' } } } }
@@ -589,7 +589,7 @@ function renderCharts(data) {
 
 // LOGIC FOR COMPARATOR (UNCHANGED CORE)
 setupUpload("input-dian","zona-dian","nombre-dian", f => archivoDian=f, "DIAN");
-setupUpload("input-siesa","zona-siesa","nombre-siesa", f => archivoSiesa=f, "SIESA");
+setupUpload("input-siesa","zona-siesa","nombre-siesa", f => archivoSiesa=f, "ERP");
 
 document.getElementById("btn-limpiar").addEventListener("click", () => {
   archivoDian = null; archivoSiesa = null;
@@ -709,7 +709,7 @@ function mostrarResultado(data) {
         <div><div class="proveedor-nombre">${p.nombre}</div><div class="proveedor-nit">NIT: ${p.nit}</div></div>
         <div class="proveedor-badges">
           <span class="badge badge-dian">DIAN: ${p.total_dian}</span>
-          <span class="badge badge-siesa">SIESA: ${p.total_en_siesa}</span>
+          <span class="badge badge-siesa">ERP: ${p.total_en_siesa}</span>
           <span class="badge ${p.total_faltantes > 0 ? 'badge-faltante' : 'badge-ok'}">${p.total_faltantes > 0 ? '⚠ '+p.total_faltantes+' FALTANTES' : '✔ COMPLETO'}</span>
           <span class="chevron" id="chevron-${i}">▼</span>
         </div>

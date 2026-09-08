@@ -168,7 +168,7 @@ def leer_dian(contenido: bytes) -> pd.DataFrame:
 
 def leer_siesa(contenido: bytes) -> pd.DataFrame:
     """Lee el Excel de Siesa y retorna DataFrame normalizado."""
-    extension = _detect_excel_format(contenido, "archivo Siesa")
+    extension = _detect_excel_format(contenido, "archivo ERP")
 
     df = pd.read_excel(
         io.BytesIO(contenido),
@@ -180,7 +180,7 @@ def leer_siesa(contenido: bytes) -> pd.DataFrame:
     columnas_requeridas = ["Proveedor", "Docto. proveedor", "Razón social proveedor"]
     for col in columnas_requeridas:
         if col not in df.columns:
-            raise ValueError(f"El archivo Siesa no tiene la columna requerida: '{col}'")
+            raise ValueError(f"El archivo ERP no tiene la columna requerida: '{col}'")
 
     df = df[columnas_requeridas].copy()
     df.columns = ["nit", "docto", "nombre"]
@@ -367,7 +367,7 @@ def _estilo_resumen(ws, resultado):
     r = resultado["resumen_general"]
     fecha = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    _color_header(ws, 1, 1, 4, f"REPORTE COMPARACIÓN DIAN vs SIESA  —  {fecha}")
+    _color_header(ws, 1, 1, 4, f"REPORTE COMPARACIÓN DIAN vs ERP  —  {fecha}")
 
     ws.merge_cells("A3:D3")
     ws["A3"] = "RESUMEN EJECUTIVO"
@@ -376,8 +376,8 @@ def _estilo_resumen(ws, resultado):
     datos = [
         ("Total proveedores analizados", r["total_proveedores"], "", ""),
         ("Total facturas en DIAN", r["total_dian"], "", ""),
-        ("Total encontradas en Siesa", r["total_en_siesa"], "", ""),
-        ("Total faltantes en Siesa", r["total_faltantes"], "", ""),
+        ("Total encontradas en ERP", r["total_en_siesa"], "", ""),
+        ("Total faltantes en ERP", r["total_faltantes"], "", ""),
         ("Porcentaje completitud", f"{r['porcentaje_completitud']}%", "", ""),
     ]
 
@@ -397,7 +397,7 @@ def _estilo_resumen(ws, resultado):
     _color_header(ws, fila, 1, 5, "DETALLE POR PROVEEDOR", color="185FA5")
     fila += 1
 
-    encabezados = ["NIT", "Nombre proveedor", "DIAN", "En Siesa", "Faltantes"]
+    encabezados = ["NIT", "Nombre proveedor", "DIAN", "En ERP", "Faltantes"]
     col_widths = [16, 42, 10, 10, 10]
     for col, (enc, ancho) in enumerate(zip(encabezados, col_widths), start=1):
         c = ws.cell(row=fila, column=col, value=enc)
@@ -427,7 +427,7 @@ def _estilo_resumen(ws, resultado):
 def _estilo_detalle(ws, resultado):
     _color_header(ws, 1, 1, 6, "DETALLE COMPLETO POR PROVEEDOR")
 
-    encabezados = ["NIT", "Nombre proveedor", "Factura DIAN", "En Siesa", "Estado"]
+    encabezados = ["NIT", "Nombre proveedor", "Factura DIAN", "En ERP", "Estado"]
     col_widths = [16, 42, 18, 10, 14]
 
     fila = 3
@@ -469,7 +469,7 @@ def _estilo_detalle(ws, resultado):
 
 
 def _estilo_faltantes(ws, resultado):
-    _color_header(ws, 1, 1, 4, "FACTURAS FALTANTES EN SIESA", color="C00000")
+    _color_header(ws, 1, 1, 4, "FACTURAS FALTANTES EN ERP", color="C00000")
 
     encabezados = ["NIT", "Nombre proveedor", "Factura faltante", "Prefijo-Folio"]
     col_widths = [16, 42, 20, 16]

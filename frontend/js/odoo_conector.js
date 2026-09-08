@@ -307,7 +307,7 @@ document.querySelectorAll('input[name="erp-mode"]').forEach(radio => {
       compararBtn.disabled = !(archivoDian && archivoSiesa);
     }
 
-    log(`Modo ERP: ${isSiesa ? 'Archivo Siesa' : 'API Odoo'}`, 'msg');
+    log(`Modo ERP: ${isSiesa ? 'Archivo ERP' : 'API Odoo'}`, 'msg');
   });
 });
 
