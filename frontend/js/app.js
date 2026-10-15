@@ -140,12 +140,15 @@ function initUserSession() {
   if (navReconciliation) navReconciliation.style.display = userModules.includes('reconciliation') ? "flex" : "none";
   const navPurchasing = document.getElementById("nav-purchasing");
   if (navPurchasing) navPurchasing.style.display = userModules.includes('purchasing') ? "flex" : "none";
+  const navVentas = document.getElementById("nav-ventas");
+  if (navVentas) navVentas.style.display = userModules.includes('ventas') ? "flex" : "none";
 
   // Modo Solo Lectura (Deshabilitar acciones operativas)
   if (!isOperador) {
     const actionIds = [
       'dian-file', 'siesa-file', 'btn-comparar', 'btn-descargar',
-      'btn-odoo-comparar', 'btn-odoo-download', 'btn-run-ai-checklist'
+      'btn-odoo-comparar', 'btn-odoo-download', 'btn-run-ai-checklist',
+      'vt-archivo', 'btn-ventas-conciliar', 'btn-ventas-investigar'
     ];
     actionIds.forEach(id => {
       const el = document.getElementById(id);
@@ -191,14 +194,14 @@ function switchView(viewId) {
 
   // Verificación de acceso a Módulos pagados
   const userModules = (currentUser?.modules || "auditor,comparisons,checklist,reconciliation,purchasing").split(',');
-  const protectedModules = ['auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing'];
+  const protectedModules = ['auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing', 'ventas'];
   if (protectedModules.includes(viewId) && !userModules.includes(viewId)) {
     log(`MÓDULO BLOQUEADO: No tienes el módulo de ${viewId} habilitado en tu licencia.`, 'warn');
     return;
   }
 
   // Ocultar todas las vistas
-  const views = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing', 'logs', 'users', 'config', 'profile'];
+  const views = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing', 'ventas', 'logs', 'users', 'config', 'profile'];
   views.forEach(v => {
     const el = document.getElementById(`view-${v}`);
     if (el) el.style.display = 'none';
@@ -209,7 +212,7 @@ function switchView(viewId) {
   if (activeView) activeView.style.display = 'block';
 
   // Remover activo de todos los nav items
-  const navs = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing', 'logs', 'users', 'config', 'profile-btn'];
+  const navs = ['dashboard', 'auditor', 'comparisons', 'checklist', 'reconciliation', 'purchasing', 'ventas', 'logs', 'users', 'config', 'profile-btn'];
   navs.forEach(n => {
     const el = document.getElementById(`nav-${n}`);
     if (el) el.classList.remove('active');
@@ -224,6 +227,7 @@ function switchView(viewId) {
     comparisons: 'PROCESAMIENTO DE ARCHIVOS',
     reconciliation: 'CONCILIACIÓN BANCARIA',
     purchasing: 'COMPRAS AUTOMÁTICAS (CORREO → ODOO)',
+    ventas: 'VENTAS DIAN VS ODOO',
     checklist: 'CHECKLIST MENSUAL (AUDITOR IA)',
     logs: 'REGISTROS DEL SISTEMA',
     users: 'GESTIÓN DE USUARIOS',
@@ -244,6 +248,7 @@ document.getElementById("nav-comparisons").addEventListener("click", () => switc
 document.getElementById("nav-checklist").addEventListener("click", () => switchView('checklist'));
 document.getElementById("nav-reconciliation").addEventListener("click", () => switchView('reconciliation'));
 document.getElementById("nav-purchasing").addEventListener("click", () => switchView('purchasing'));
+document.getElementById("nav-ventas")?.addEventListener("click", () => switchView('ventas'));
 document.getElementById("nav-logs").addEventListener("click", () => switchView('logs'));
 document.getElementById("nav-users").addEventListener("click", () => switchView('users'));
 document.getElementById("nav-profile-btn").addEventListener("click", () => switchView('profile'));
@@ -325,6 +330,7 @@ window.editUserModules = (id, name, currentModulesStr) => {
         <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-checklist" ${current.includes('checklist') ? 'checked' : ''}> Checklist (Auditor IA)</label>
         <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-reconciliation" ${current.includes('reconciliation') ? 'checked' : ''}> Conciliación Bancaria</label>
         <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-purchasing" ${current.includes('purchasing') ? 'checked' : ''}> Compras Automáticas</label>
+        <label style="font-size:0.65rem; color:var(--text); cursor:pointer;"><input type="checkbox" id="chk-ventas" ${current.includes('ventas') ? 'checked' : ''}> Ventas DIAN vs Odoo</label>
       </div>
       <button class="btn btn-cyan" id="btn-save-modules" style="width:100%; justify-content:center;">GUARDAR PERMISOS</button>
       <button class="btn btn-outline" id="btn-cancel-modules" style="width:100%; justify-content:center; margin-top:10px;">CANCELAR</button>
@@ -340,6 +346,7 @@ window.editUserModules = (id, name, currentModulesStr) => {
     if(document.getElementById('chk-checklist').checked) selected.push('checklist');
     if(document.getElementById('chk-reconciliation').checked) selected.push('reconciliation');
     if(document.getElementById('chk-purchasing').checked) selected.push('purchasing');
+    if(document.getElementById('chk-ventas').checked) selected.push('ventas');
     
     const modulesStr = selected.join(',');
     
@@ -352,6 +359,12 @@ window.editUserModules = (id, name, currentModulesStr) => {
     
     if(res.success) {
       log("Módulos actualizados correctamente.", "ok");
+      // Si el administrador se editó a sí mismo, aplicar los módulos sin volver a iniciar sesión
+      if (currentUser && String(currentUser.id) === String(id)) {
+        currentUser.modules = modulesStr;
+        localStorage.setItem("factura_user", JSON.stringify(currentUser));
+        initUserSession();
+      }
       loadUsersTable();
     } else {
       log("Error actualizando módulos: " + res.error, "err");

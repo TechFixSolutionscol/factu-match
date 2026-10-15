@@ -4,6 +4,18 @@ Sistema para detectar facturas recibidas que están en la DIAN pero no están re
 
 ---
 
+## Módulo FactuMatch Ventas (DIAN emitidos vs Odoo)
+
+Concilia el contenedor de documentos **emitidos** de la DIAN contra `account.move` y `pos.order` de Odoo en **solo lectura**: identificación por CUFE/CUDE y número, totales globales con `Decimal`, descomposición exacta de la diferencia y un agente opcional con **Claude** que investiga con herramientas controladas.
+
+- Documentación completa (reglas, arquitectura, variables, despliegue y pruebas): [`docs/VENTAS.md`](docs/VENTAS.md)
+- Variables nuevas en Render: `ANTHROPIC_API_KEY` (opcional) y `ANTHROPIC_MODEL` (por defecto `claude-haiku-5-5`), más los ajustes `VENTAS_*` de `backend/.env.example`.
+- El módulo se habilita por usuario como `ventas` en *Gestión usuarios → Editar módulos*.
+- Pruebas: `cd backend && python -m pytest -q` (datos sintéticos; nunca el contenedor real).
+- QA de punta a punta en navegador: `python qa/ventas/qa_ui.py` (Playwright; Odoo y Claude simulados). Resultados, revisión independiente y la prueba de aceptación pendiente en staging: [`docs/QA_VENTAS.md`](docs/QA_VENTAS.md)
+
+---
+
 ## Estructura del proyecto
 
 ```
