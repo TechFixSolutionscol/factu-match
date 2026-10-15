@@ -16,6 +16,7 @@ from odoo_match import OdooConnector, CredentialManager, _normalizar_clave_odoo,
 from email_parser import process_emails, process_emails_force, connect_db
 from ai_auditor import build_odoo_context, run_ai_audit
 from purchase_parser import map_lines_to_odoo, _normalize_desc, _save_corrections_to_history
+from ventas.router import router as ventas_router
 from datetime import datetime, timedelta
 import psycopg2.extras
 from dotenv import load_dotenv
@@ -62,6 +63,10 @@ async def auth_middleware(request, call_next):
                 from fastapi.responses import JSONResponse
                 return JSONResponse(status_code=401, content={"detail": "No autorizado. Token inválido o faltante."})
     return await call_next(request)
+
+
+# ── FactuMatch Ventas (DIAN emitidos vs Odoo, solo lectura): /api/ventas/... ──
+app.include_router(ventas_router)
 
 
 @app.get("/")
