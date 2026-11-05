@@ -151,18 +151,20 @@ function handleLogin(data) {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName("Usuarios");
   const values = sheet.getDataRange().getValues();
-  
+  const login = String(data.user || "").trim().toLowerCase();
+  if (!login) throw new Error("INGRESE SU CORREO O ID DE USUARIO.");
   const inputHash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, data.pass));
 
   for (let i = 1; i < values.length; i++) {
-    const dbEmail = values[i][2];
+    const dbEmail = String(values[i][2] || "").trim();
+    const dbId = String(values[i][0] || "").trim();
     const dbPass = values[i][3];
     const dbStatus = values[i][4];
     const dbRole = values[i][7] || "Operador";
     const dbFailCount = parseInt(values[i][10] || 0);
     const dbLockUntil = values[i][11];
 
-    if (dbEmail === data.user || values[i][0] === data.user) {
+    if (dbEmail.toLowerCase() === login || dbId.toLowerCase() === login) {
       // Verificar Bloqueo
       if (dbLockUntil && new Date().getTime() < new Date(dbLockUntil).getTime()) {
         throw new Error("CUENTA BLOQUEADA TEMPORALMENTE POR SEGURIDAD. INTENTA MÁS TARDE.");
@@ -248,7 +250,7 @@ function sendInvitationEmail(name, email, token) {
     <div style="font-family: sans-serif; padding: 20px; border: 1px solid #2a3050; background-color: #0f1117; color: #c8d0e0;">
       <h2 style="color: #00e5ff;">Bienvenido al Sistema</h2>
       <p>Hola <strong>${name}</strong>, se ha creado una cuenta para ti en el <strong>Comparador de Facturas</strong>.</p>
-      <p>Haz clic abajo para configurar tu contraseña (válido por 24 horas):</p>
+      <p>Haz clic abajo para configurar tu contraseña (válido por 48 horas):</p>
       <a href="${invitationLink}" style="display: inline-block; padding: 12px 24px; background-color: #00e5ff; color: #0a0e1a; text-decoration: none; border-radius: 4px; font-weight: bold;">CONFIGURAR MI CONTRASEÑA</a>
       <hr style="border-color: #2a3050; margin: 24px 0;">
       <p>Una vez activada tu cuenta, podrás ingresar al sistema en:</p>
@@ -301,7 +303,7 @@ function doGet(e) {
       </style>
       <div style="background:#1a1f2e; padding:30px; border:1px solid #2a3050; border-radius:8px; width:320px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
         <h3 style="color:#00e5ff; margin-top:0;">Hola ${userFound.name}</h3>
-        <p style="font-size:0.85em; color:#8892aa;">Define tu contraseña para activar la cuenta</p>
+        <p style="font-size:0.85em; color:#8892aa;">${isRecovery ? "Define una nueva contraseña para recuperar tu cuenta" : "Define tu contraseña para activar la cuenta"}</p>
         
         <div style="position:relative; margin-bottom:10px;">
           <input type="password" id="p1" placeholder="Nueva Contraseña" style="width:100%; box-sizing:border-box; padding:12px; background:#0a0d14; border:1px solid #2a3050; color:white; border-radius:4px;">
@@ -313,10 +315,11 @@ function doGet(e) {
           <div onclick="t('p2')" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); cursor:pointer; color:#5a6480;">👁</div>
         </div>
 
-        <button id="btn-save" onclick="save()" style="width:100%; padding:12px; background:#00e5ff; color:#0a0e1a; border:none; border-radius:4px; font-weight:bold; cursor:pointer; text-transform:uppercase; letter-spacing:1px; display:flex; align-items:center; justify-content:center; gap:8px;">ACTIVAR MI CUENTA</button>
+        <button id="btn-save" onclick="save()" style="width:100%; padding:12px; background:#00e5ff; color:#0a0e1a; border:none; border-radius:4px; font-weight:bold; cursor:pointer; text-transform:uppercase; letter-spacing:1px; display:flex; align-items:center; justify-content:center; gap:8px;">${isRecovery ? "RESTABLECER CONTRASEÑA" : "ACTIVAR MI CUENTA"}</button>
         <p id="msg" style="font-size:0.75em; margin-top:15px; color:#ff5252; font-weight:bold;"></p>
       </div>
       <script>
+        const isRecovery = ${isRecovery ? "true" : "false"};
         function t(id) {
           const x = document.getElementById(id);
           x.type = x.type === 'password' ? 'text' : 'password';
@@ -335,19 +338,28 @@ function doGet(e) {
           msg.style.color = "#00e5ff";
           msg.innerText = "";
           
-          const action = ${isRecovery ? "'resetPassword'" : "'setPassword'"} ;
-          const successMsg = ${isRecovery ? "'¡CONTRASEÑA RESTABLECIDA!'" : "'¡CUENTA ACTIVADA!'"};
+          const action = isRecovery ? "resetPassword" : "setPassword";
+          const successMsg = isRecovery ? "¡CONTRASEÑA RESTABLECIDA!" : "¡CUENTA ACTIVADA!";
 
-          google.script.run.withSuccessHandler((res) => {
-            if(res && res.success === false) {
+          const runner = google.script.run
+            .withSuccessHandler((res) => {
+            if(res === false || (res && res.success === false)) {
                msg.style.color = "#ff5252";
-               msg.innerText = res.error || "ERROR EN EL PROCESO";
+               msg.innerText = (res && res.error) || "EL ENLACE YA NO ES VÁLIDO. SOLICITA UNA NUEVA INVITACIÓN.";
                btn.disabled = false;
                btn.innerText = "REINTENTAR";
                return;
             }
             document.body.innerHTML = "<div style='text-align:center; font-family:sans-serif; background:#0f1117; height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; margin:0;'><h2 style='color:#00e676'>" + successMsg + " 🎉</h2><p style='color:#8892aa; margin-bottom:24px;'>Tu contraseña ha sido configurada exitosamente.</p><p style='color:#c8d0e0; margin-bottom:16px;'>Ya puedes ingresar al sistema:</p><a href='https://comparador-facturas.vercel.app/' style='display:inline-block; padding:12px 28px; background:#00e5ff; color:#0a0e1a; text-decoration:none; border-radius:4px; font-weight:bold; letter-spacing:1px; font-size:1rem;'>IR AL SISTEMA →</a></div>";
-          })[isRecovery ? "resetPassword" : "setPassword"]("${userFound.token}", p1);
+            })
+            .withFailureHandler((error) => {
+              msg.style.color = "#ff5252";
+              msg.innerText = (error && error.message) || "NO SE PUDO GUARDAR LA CONTRASEÑA. INTENTA DE NUEVO.";
+              btn.disabled = false;
+              btn.innerText = "REINTENTAR";
+            });
+          if (action === "setPassword") runner.setPassword("${userFound.token}", p1);
+          else runner.resetPassword("${userFound.token}", p1);
         }
       </script>
     </body>`;
@@ -359,7 +371,13 @@ function setPassword(token, password) {
   const sheet = ss.getSheetByName("Usuarios");
   const data = sheet.getDataRange().getValues();
   for (let i = 1; i < data.length; i++) {
-    if (data[i][5] === token) {
+    if (data[i][5] === token && data[i][4] === "pending") {
+      if (!data[i][6] || new Date().getTime() >= new Date(data[i][6]).getTime()) {
+        throw new Error("EL ENLACE DE ACTIVACIÓN HA EXPIRADO. SOLICITA UNA NUEVA INVITACIÓN.");
+      }
+      if (!password || password.length < 8 || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+        throw new Error("LA CONTRASEÑA DEBE TENER 8 CARACTERES, UNA MAYÚSCULA Y UN NÚMERO.");
+      }
       const passHash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, password));
       // Resetear token y activar cuenta
       sheet.getRange(i + 1, 4, 1, 4).setValues([[passHash, "active", "", ""]]);

@@ -19,14 +19,17 @@ async function callGASRobust(action, data = {}) {
       body: JSON.stringify({ action, data })
     });
     const text = await response.text();
+    let json;
     try {
-      const json = JSON.parse(text);
-      if (json.success === false) throw new Error(json.error || "Error en el servidor");
-      return json;
+      json = JSON.parse(text);
     } catch (e) {
       console.error("No se pudo parsear JSON de GAS:", text);
       return { success: false, error: e.message || "Respuesta inválida del servidor" };
     }
+    if (json.success === false) {
+      return { success: false, error: json.error || "Error en el servidor" };
+    }
+    return json;
   } catch (e) {
     return { success: false, error: e.message };
   }
@@ -34,7 +37,7 @@ async function callGASRobust(action, data = {}) {
 
 // LOGIN SUBMIT
 document.getElementById("btn-login-submit").addEventListener("click", async () => {
-  const user = document.getElementById("login-user").value;
+  const user = document.getElementById("login-user").value.trim();
   const pass = document.getElementById("login-pass").value;
   const errorDiv = document.getElementById("login-error");
   
