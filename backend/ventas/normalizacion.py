@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -46,26 +47,48 @@ _VACIOS = {"", "nan", "none", "null", "false", "-", "/"}
 # TEXTO
 # ──────────────────────────────────────────────
 
+_RE_ESPACIOS = re.compile(r"\s+")
+
+
+@lru_cache(maxsize=8192)
 def texto_clave(valor) -> str:
-    """Minúsculas, sin tildes y con espacios simples. Para comparar etiquetas."""
+    """
+    Minúsculas, sin tildes y con espacios simples. Para comparar etiquetas.
+
+    Memoizada: se llama varias veces por fila sobre un puñado de valores
+    distintos (tipo de documento, grupo, estado, nombres de columna).
+    """
     if valor is None or valor is False:
         return ""
-    s = unicodedata.normalize("NFKD", str(valor))
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    return re.sub(r"\s+", " ", s).strip().lower()
+    s = unicodedata.normalize("NFKD", valor if type(valor) is str else str(valor))
+    if not s.isascii():
+        s = "".join(c for c in s if not unicodedata.combining(c))
+    return _RE_ESPACIOS.sub(" ", s).strip().lower()
 
 
 def texto_limpio(valor) -> str:
     """Texto sin espacios sobrantes; '' para vacíos de Excel/Odoo."""
     if valor is None or valor is False:
         return ""
-    s = re.sub(r"\s+", " ", str(valor)).strip()
+    s = valor if type(valor) is str else str(valor)
+    if _RE_ESPACIOS_RAROS.search(s):
+        s = _RE_ESPACIOS.sub(" ", s).strip()
     return "" if s.lower() in _VACIOS else s
+
+
+# Solo hace falta normalizar si hay espacios repetidos, tabuladores/saltos, o
+# espacio al principio o al final: en el contenedor es la excepción.
+_RE_ESPACIOS_RAROS = re.compile(r"^\s|\s$|\s\s|[^\S ]")
 
 
 # ──────────────────────────────────────────────
 # DINERO
 # ──────────────────────────────────────────────
+
+_RE_SIGNO = re.compile(r"^[^\d]*-")
+_RE_NO_NUMERO = re.compile(r"[^0-9,.]")
+_RE_DIGITO = re.compile(r"\d")
+
 
 def a_decimal(valor) -> Decimal:
     """
@@ -91,9 +114,9 @@ def a_decimal(valor) -> Decimal:
         if texto.lower() in _VACIOS:
             return CERO
         # Signo antes del primer dígito («-5.000», «$ -1.234,56») o entre paréntesis («(1.000)»).
-        negativo = bool(re.match(r"^[^\d]*-", texto)) or (texto.startswith("(") and texto.endswith(")"))
-        texto = re.sub(r"[^0-9,.]", "", texto)
-        if not texto or not re.search(r"\d", texto):
+        negativo = bool(_RE_SIGNO.match(texto)) or (texto.startswith("(") and texto.endswith(")"))
+        texto = _RE_NO_NUMERO.sub("", texto)
+        if not texto or not _RE_DIGITO.search(texto):
             raise ValueError(f"Importe no numérico: {valor!r}")
         if "," in texto and "." in texto:
             if texto.rfind(",") > texto.rfind("."):
@@ -325,6 +348,14 @@ def parsear_fecha(valor) -> Optional[date]:
     texto = texto_limpio(valor)
     if not texto:
         return None
+    if len(texto) == 10:                        # ruta rápida: los dos formatos del contenedor
+        try:
+            if texto[2] in "-/" and texto[5] == texto[2]:
+                return date(int(texto[6:10]), int(texto[3:5]), int(texto[0:2]))
+            if texto[4] in "-/" and texto[7] == texto[4]:
+                return date(int(texto[0:4]), int(texto[5:7]), int(texto[8:10]))
+        except ValueError:
+            pass                                # formato raro: sigue por strptime
     for fmt in _FORMATOS_FECHA:
         try:
             return datetime.strptime(texto, fmt).date()
@@ -345,6 +376,13 @@ def parsear_fecha_hora(valor) -> Optional[datetime]:
     texto = texto_limpio(valor)
     if not texto:
         return None
+    if len(texto) == 19 and texto[10] in "T " and texto[4] == "-" and texto[7] == "-" \
+            and texto[13] == ":" and texto[16] == ":":      # ruta rápida: AAAA-MM-DDTHH:MM:SS
+        try:
+            return datetime(int(texto[0:4]), int(texto[5:7]), int(texto[8:10]),
+                            int(texto[11:13]), int(texto[14:16]), int(texto[17:19]))
+        except ValueError:
+            pass
     for fmt in _FORMATOS_FECHA_HORA:
         try:
             return datetime.strptime(texto, fmt)
