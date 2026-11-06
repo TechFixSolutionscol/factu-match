@@ -18,6 +18,7 @@ de formato de archivo de comparador.py.
 from __future__ import annotations
 
 import io
+import logging
 import re
 import zipfile
 from collections import Counter, defaultdict
@@ -27,6 +28,8 @@ from decimal import Decimal
 from typing import Optional
 
 from comparador import _detect_excel_format
+
+from . import lector_xlsx
 
 from .normalizacion import (
     CERO,
@@ -65,6 +68,8 @@ OTROS_IMPUESTOS = (
 )
 RETENCIONES = ("Rete IVA", "Rete Renta", "Rete ICA")
 TODAS_LAS_COLUMNAS = COLUMNAS_REQUERIDAS + COLUMNAS_CONTEXTO + OTROS_IMPUESTOS + RETENCIONES
+
+logger = logging.getLogger(__name__)
 
 GRUPO_EMITIDO = "emitido"
 MAX_FILAS = 100_000
@@ -291,30 +296,41 @@ def _demasiadas_filas(cantidad: int) -> ValueError:
     return ValueError(f"El contenedor tiene más de {MAX_FILAS} filas (al menos {cantidad}): exporta un período más corto.")
 
 
+def _revisar_tamano_xlsx(contenido: bytes) -> None:
+    """
+    Rechaza un .xlsx que ocupe demasiado al descomprimirlo, sin leerlo.
+
+    Un .xlsx es un ZIP: pocos MB pueden contener millones de filas idénticas.
+    `zipfile` nunca entrega más bytes de los que declara cada parte, así que
+    sumar los tamaños declarados basta y cuesta solo leer el índice del ZIP.
+    """
+    try:
+        archivo = zipfile.ZipFile(io.BytesIO(contenido))
+    except zipfile.BadZipFile:
+        return  # quien lea después informará el error de formato
+    with archivo:
+        if sum(p.file_size for p in archivo.infolist()) > MAX_XLSX_DESCOMPRIMIDO:
+            raise ValueError(
+                f"El contenedor ocupa más de {MAX_XLSX_DESCOMPRIMIDO // (1024 * 1024)} MB al descomprimirlo: "
+                "exporta un período más corto."
+            )
+
+
 def _revisar_xlsx(contenido: bytes, tope: int) -> None:
     """
     Revisa el .xlsx antes de abrirlo con openpyxl, sin cargarlo en memoria.
 
-    Un .xlsx es un ZIP: pocos MB pueden contener millones de filas idénticas.
-    Si la hoja no declara <dimension>, openpyxl la recorre completa al abrirla,
-    antes de que el tope de filas de _leer_filas pueda actuar. Por eso aquí:
-      1. se rechaza el archivo si su tamaño descomprimido declarado supera
-         MAX_XLSX_DESCOMPRIMIDO (zipfile nunca entrega más de lo declarado);
-      2. se cuentan las filas de cada hoja descomprimiendo por bloques y se
-         rechaza en cuanto superan el tope.
+    Además del tamaño descomprimido, cuenta las filas de cada hoja: si la hoja
+    no declara <dimension>, openpyxl la recorre completa al abrirla, antes de
+    que el tope de filas de _leer_filas pueda actuar.
     """
+    _revisar_tamano_xlsx(contenido)
     try:
         archivo = zipfile.ZipFile(io.BytesIO(contenido))
     except zipfile.BadZipFile:
         return  # openpyxl informará el error de formato
     with archivo:
-        partes = archivo.infolist()
-        if sum(p.file_size for p in partes) > MAX_XLSX_DESCOMPRIMIDO:
-            raise ValueError(
-                f"El contenedor ocupa más de {MAX_XLSX_DESCOMPRIMIDO // (1024 * 1024)} MB al descomprimirlo: "
-                "exporta un período más corto."
-            )
-        for parte in partes:
+        for parte in archivo.infolist():
             if not (parte.filename.startswith("xl/worksheets/") and parte.filename.endswith(".xml")):
                 continue
             filas, cola = 0, b""
@@ -331,11 +347,29 @@ def _revisar_xlsx(contenido: bytes, tope: int) -> None:
                     cola = datos[max(fin, len(datos) - 64):]
 
 
+def _es_la_hoja_del_contenedor(primeras_filas: list[tuple]) -> bool:
+    """La hoja buena es la que declara la columna CUFE/CUDE en sus primeras filas."""
+    return any(texto_clave(c) == "cufe/cude" for fila in primeras_filas for c in fila or ())
+
+
 def _leer_filas(contenido: bytes) -> tuple[str, list[tuple]]:
     """Lee la hoja del contenedor y se detiene en cuanto supera MAX_FILAS (no carga el resto)."""
     tope = MAX_FILAS + 15
     formato = _detect_excel_format(contenido, "contenedor DIAN")
     if formato == "xlsx":
+        _revisar_tamano_xlsx(contenido)
+        try:
+            # Ruta rápida: recorre el XML sin construir un objeto por celda. Enforce
+            # el tope de filas por sí misma, así que no hace falta el conteo previo.
+            return lector_xlsx.leer_filas(contenido, tope, MAX_COLUMNAS,
+                                          _es_la_hoja_del_contenedor, _demasiadas_filas)
+        except lector_xlsx.NoAplicable as motivo:
+            logger.info("ventas: lectura rápida no aplicable (%s); se usa openpyxl", motivo)
+        except (ValueError, zipfile.BadZipFile):
+            raise
+        except Exception:                                   # noqa: BLE001
+            logger.warning("ventas: la lectura rápida falló; se usa openpyxl", exc_info=True)
+
         _revisar_xlsx(contenido, tope)
         from openpyxl import load_workbook
 
@@ -343,8 +377,7 @@ def _leer_filas(contenido: bytes) -> tuple[str, list[tuple]]:
         try:
             hoja = wb.worksheets[0]
             for ws in wb.worksheets:
-                if any(texto_clave(c) == "cufe/cude"
-                       for fila in ws.iter_rows(min_row=1, max_row=15, values_only=True) for c in fila or ()):
+                if _es_la_hoja_del_contenedor(list(ws.iter_rows(min_row=1, max_row=15, values_only=True))):
                     hoja = ws
                     break
             filas: list[tuple] = []

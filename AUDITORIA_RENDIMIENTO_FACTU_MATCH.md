@@ -1,6 +1,6 @@
 # AUDITORÍA DE RENDIMIENTO, ESTABILIDAD Y ESCALABILIDAD — FACTU-MATCH
 
-**Fecha:** 05-11-2026 · **Commit auditado:** `1708041` (`main`, 05-11-2026 15:04) · **Entorno de medición:** contenedor Linux local (2 CPU, 8 GB), Python 3.10, mismas versiones que `requirements.txt` (FastAPI 0.111.0, uvicorn 0.29.0, pandas 2.0.3, openpyxl 3.1.2) · **Alcance:** solo lectura; no se modificó código, dependencias, configuración ni despliegues.
+**Fecha:** 05-11-2026 (actualizado a las 19:50 con el archivo real del mes) · **Commit auditado:** `1708041` (`main`, 05-11-2026 15:04) · **Entorno de medición:** contenedor Linux local (2 CPU, 8 GB), Python 3.10, mismas versiones que `requirements.txt` (FastAPI 0.111.0, uvicorn 0.29.0, pandas 2.0.3, openpyxl 3.1.2) · **Alcance:** solo lectura; no se modificó código, dependencias, configuración ni despliegues.
 
 Convenciones: **[HECHO]** = observado o medido en esta auditoría; **[HIPÓTESIS]** = explicación plausible pendiente de evidencia; **[NO VERIFICABLE]** = requiere acceso o datos que no estaban disponibles. Todas las mediciones de volumen son **pruebas locales con datos sintéticos** (sección 9); contra producción solo se enviaron peticiones mínimas de contrato sin archivos (sección 4.3), y nunca contra Odoo real. La configuración, métricas, eventos y logs de producción se leyeron con el conector oficial de Render en modo lectura.
 
@@ -14,8 +14,10 @@ Convenciones: **[HECHO]** = observado o medido en esta auditoría; **[HIPÓTESIS
 4. **El usuario no recibe ninguna información durante todo ese tiempo** [HECHO]: una sola petición HTTP de minutos, sin progreso, sin timeout, sin cancelación, y un backend que no escribe ni una línea de log por etapa. Por eso el log de Render «solo confirma el arranque» y la pantalla parece bloqueada. Las métricas de Render no muestran ningún agotamiento de memoria (pico observado 209 MB el 20-10) ni evento de fallo o reinicio desde el 15-10: hasta donde la evidencia llega, el servicio no «se cae»; **se duerme, arranca lento y procesa lento sin avisar**.
 5. **El error del navegador no es de Factu-Match** [HECHO]: «A listener indicated an asynchronous response…» lo emite una extensión de Chrome; el frontend no usa `chrome.runtime` ni `postMessage`. Es un síntoma secundario.
 6. **Compras tiene dos defectos de estabilidad que afectan a todo el servidor** [HECHO, reproducidos en local]: (a) `/odoo/comparar` y `/odoo/descargar-reporte` ejecutan pandas y la generación del Excel **dentro del bucle de eventos**, bloqueando todas las peticiones de todos los usuarios (5 s de comparación y 14 s de reporte medidos con 7.235 filas, durante los cuales nadie es atendido); (b) dos comparaciones simultáneas **interbloquean** el executor de 2 hilos y Compras deja de responder hasta reiniciar.
-7. **Límites reales hoy** [HECHO]: 10 MB por archivo (un contenedor de 100.000 filas pesa ≈16 MB → rechazado con 413 antes de leerlo), 100.000 filas, 50.000 registros por modelo de Odoo. **Capacidad demostrada en local:** hasta 50.000 filas con ≈1,1 GB de memoria pico; en un plan de 512 MB la capacidad práctica es de ~10.000–15.000 filas por conciliación. 50.000 documentos es alcanzable solo con procesamiento en segundo plano, resultados paginados y un plan con ≥2 GB; 100.000 exige además persistencia fuera de memoria.
-8. **Plan recomendado** (sección 15): fase 0 completar la evidencia que aún falta (archivo real de 7.235 filas, latencia de Odoo, captura de *Network*); fase 1 quitar los bloqueos del bucle de eventos y el interbloqueo en Compras, leer el Excel una sola vez, registrar duración por etapa y dar feedback y timeout en el frontend; fase 2 ejecuciones asíncronas con progreso y resultados paginados; fase 3 persistencia en la Postgres existente y pruebas de estrés en staging. Pasar de `free` a `starter` (sin *spin-down*, 0,5 CPU) elimina el arranque en frío y multiplica por tres la CPU, y es la medida más barata de aplicar de inmediato; pero no corrige el bloqueo del bucle de eventos de Compras, la memoria retenida ni la falta de progreso, y el límite de 512 MB sigue igual.
+7. **El archivo real del mes de octubre se midió el 05-11-2026 y confirma el diagnóstico** [HECHO, §9.5]: 7.235 filas, 1,25 MB, se lee en 1,8 s, 32 de 32 columnas, un solo NIT emisor, ninguna validación bloqueante, residuo 0 y todas las discrepancias plantadas detectadas. Dos hallazgos del archivo real: usa un dialecto XML con prefijo `x:` que el lector procesa correctamente, y **no contiene ningún documento POS** (97,1 % facturas electrónicas), de modo que el perfil con el que se habían hecho las pruebas sintéticas no era el de esta empresa.
+8. **El techo del negocio son 15.000 facturas al mes, no 50.000 ni 100.000** (dato del usuario). Eso reenfoca el problema: los topes de diseño sobran, y el único límite que se alcanza es la **memoria**. Medido con el perfil real [HECHO, §9.6]: con 15.000 filas cada conciliación retiene ≈100 MB y, con la configuración actual (`VENTAS_MAX_RESULTADOS=5`), el proceso llega a **585 MB en la tercera conciliación y Render lo mata** (límite 512 MB). Con `=2` el pico sigue pasándose (539 MB); con **`=1` se estabiliza en 449 MB y cabe**. Un mes típico de 7.235 filas sí cabe hoy (354 MB tras tres conciliaciones).
+9. **La lectura ya está optimizada y no era el cuello** [HECHO, §9.7, 06-11-2026]: a petición del usuario se reescribió la lectura del contenedor con un lector de `.xlsx` propio que recorre el XML a trozos de 256 KB sin cargarlo entero, con reserva automática a openpyxl si encuentra algo que no cubre. `leer_contenedor` pasó de 1,48 s a **0,68 s** con el archivo real (2,2x) y de 1,96 s a **1,08 s** con 15.000 filas (1,8x), con el pico de memoria igual o algo menor. Verificado con 240 pruebas unitarias, 21/21 de QA de interfaz y un arnés que compara la ruta rápida con openpyxl celda a celda y por tipo en 18 casos, el archivo real incluido. **Pero el diagnóstico no cambia**: la lectura era el 15–20 % del flujo, así que con 15.000 filas el proceso sigue superando los 512 MB a la tercera conciliación si no se aplica el punto siguiente.
+10. **Plan recomendado** (sección 15), ya reenfocado al techo de 15.000 facturas: **hoy mismo y sin código**, poner `VENTAS_MAX_RESULTADOS=1` en Render (evita el agotamiento de memoria medido) y pasar el plan de `free` a `starter` (quita el arranque en frío y triplica la CPU: ≈18 s de CPU pasan de ≈2 min a ≈36 s). Después: fase 1, quitar los bloqueos del bucle de eventos y el interbloqueo en Compras, leer el Excel una sola vez, registrar duración por etapa y dar feedback y timeout en el frontend; fase 2, ejecuciones asíncronas con progreso y resultados paginados, y reducir lo que retiene cada resultado. **La fase 3 (persistencia y escala a 50.000–100.000) deja de ser necesaria**: con 15.000 como techo real, basta con que quepan dos o tres conciliaciones en memoria y que el usuario vea el progreso.
 
 ---
 
@@ -23,7 +25,7 @@ Convenciones: **[HECHO]** = observado o medido en esta auditoría; **[HIPÓTESIS
 
 | # | Problema reportado | Qué se pudo verificar |
 |---|---|---|
-| P-1 | Con un archivo mensual (~7.235 filas) la aplicación «se bloquea o no termina» | No se dispone del archivo. Se reprodujo el flujo completo en local, con la app real y un fixture sintético de 7.235 filas del mismo formato (sección 9): termina correctamente en ≈9,5 s de CPU más el tiempo de Odoo. En producción el servicio es `free` (0,15 CPU, 512 MB, *spin-down*): el arranque en frío de ≈1 min, la CPU reducida y la ausencia total de feedback explican la percepción de bloqueo (sección 4). En el único arranque registrado hoy (15:52) la petición de carga nunca llegó a la aplicación |
+| P-1 | Con un archivo mensual (~7.235 filas) la aplicación «se bloquea o no termina» | **Medido con el archivo real** (§9.5): se lee en 1,8 s y el flujo completo cuesta ≈8,5 s de CPU, con residuo 0 y sin validaciones bloqueantes. En producción el servicio es `free` (0,15 CPU, 512 MB, *spin-down*): esos ≈8,5 s equivalen a ≈1 minuto, más 20–60 s de Odoo y hasta 1 min de arranque en frío, sin ninguna señal en pantalla (sección 4). En el único arranque registrado el 05-11 (15:52) la petición de carga nunca llegó a la aplicación |
 | P-2 | Error en consola: «A listener indicated an asynchronous response by returning true, but the message channel closed…» | Procede de una extensión del navegador (sección 3) |
 | P-3 | El log de Render solo muestra el arranque de Uvicorn | Es exactamente lo que hay en el log de Render para el arranque de las 15:52 de hoy (sección 4.5): tras `Uvicorn running…` no hay ninguna línea más hasta `Shutting down` 15 minutos después. Además el código no escribe ningún `logger.info` por etapa y la línea de acceso de uvicorn solo aparece al terminar la respuesta |
 | P-4 | Hoy, primera petición al backend sin respuesta en 45 s (16:28), 0,8 s a las 16:29 | Confirmado como arranque en frío: el log muestra `Running 'uvicorn…'` a las 16:28:45 y `Application startup complete` a las 16:29:05; la petición retenida se sirvió a las 16:29:08 (sección 4.5) |
@@ -188,6 +190,7 @@ Cada hallazgo: evidencia, componente, causa, impacto, prioridad (P0 crítico · 
 - **Impacto:** con el límite real de **0,15 CPU** del servicio (sección 4.2) esos ≈9,5 s se convierten en ≈1–2 minutos de procesamiento, más el arranque en frío y la red de Odoo; con *Starter* (0,5 CPU), en ≈20–30 s. Es el principal factor de «no termina» junto con la ausencia de feedback (R-10).
 - **Solución:** leer una sola vez (fase 1); leer solo las columnas usadas (B); generar el Excel en segundo plano y cachearlo (fase 2).
 - **Validación:** repetir `bench_ventas.py 7235 --fixture fx` tras el cambio: CPU total < 10 s en este entorno; mismo JSON de resultado.
+- **Estado (06-11-2026): la parte de lectura está hecha** [§9.7]. `leer_contenedor` pasó de 1,48 s a 0,68 s con el archivo real (2,2x) y de 1,96 s a 1,08 s con 15.000 filas (1,8x), sin subir el pico de memoria. Lo demás de R-1 (reporte, doble lectura) sigue pendiente.
 
 ### R-2 · Memoria: ≈6,3 KB retenidos por documento y hasta 5 conciliaciones en memoria (P1)
 - **Evidencia:** servidor real medido en `/proc` (sección 9.2): 7.235 filas → 129 MB base, **256 MB** tras la 1.ª conciliación, 307 MB tras la 2.ª, 356 MB tras la 3.ª (≈50 MB retenidos por conciliación); 15.000 filas → 401 MB tras la 1.ª, **522 MB** tras la 2.ª, 630 MB tras la 3.ª. Por funciones: resultado guardado 46 MB (7.235), 95 MB (15.000), 317 MB (50.000); pico durante el Excel 57 MB (7.235) y 400 MB (50.000).
@@ -203,6 +206,7 @@ Cada hallazgo: evidencia, componente, causa, impacto, prioridad (P0 crítico · 
 - **Impacto:** +35 % de CPU y +1,2 MB de subida por conciliación; crece linealmente.
 - **Solución:** conservar la lectura unos minutos en memoria indexada por hash del archivo, o hacer el análisis dentro de la ejecución asíncrona (fase 1/2).
 - **Validación:** una sola llamada a `leer_contenedor` por conciliación en el log de etapas.
+- **Por qué NO se implementó la caché al optimizar la lectura (06-11-2026):** cachear el contenedor leído ahorraría ≈1,1 s por conciliación de 15.000 filas, pero retendría ≈30 MB entre las dos peticiones. Con el techo real del negocio el proceso ya se queda a 390 MB de los 512 MB disponibles (§9.7), así que esa caché cambia el recurso abundante (CPU) por el escaso (memoria), en la dirección contraria a la que hace falta. La forma correcta de cerrar R-3 es la de la fase 2 —hacer el análisis **dentro** de la ejecución asíncrona, de modo que el archivo se lea una sola vez y no haya nada que retener entre peticiones—, no una caché. Tras la optimización, el coste del doble parseo bajó de ≈2,0 s a ≈1,1 s por conciliación de 15.000 filas.
 
 ### R-4 · Extracción de Odoo secuencial, por `offset`, sin progreso ni tope total (P1)
 - **Evidencia:** `odoo_ventas.search_read_todo`: páginas de 500 con `offset` creciente, una llamada tras otra; 21 llamadas y 12 MB de XML para 7.235 filas, 105 llamadas y 83 MB para 50.000 (medido con Odoo simulado, que sí paga la serialización XML-RPC). Tope de 120 s **por llamada** (`_TransporteConTiempo`), ninguno por petición.
@@ -321,9 +325,106 @@ Servidor real (`main.py` completo con uvicorn, Odoo simulado por `OdooRapido`), 
 
 Todos los conteos cuadran (faltantes plantados = detectados). La lectura con pandas cuesta ≈0,5 ms por fila y el reporte ≈1,7–1,9 ms por fila; ambos son lineales. Lo grave no es el tiempo sino **dónde** corre: durante esos segundos el bucle de eventos no atiende a nadie (hallazgo R-5). Memoria moderada: Compras no retiene resultados.
 
-### 9.4 Contenedor real (solo en local, agregados)
+### 9.4 Contenedor real de la quincena (solo en local, agregados)
 
-Se leyó en local el contenedor real que entregó el negocio en octubre (3.178 filas, quincena; el archivo mensual de 7.235 filas no estaba disponible), con el código actual: 630 KB; lectura y validación **1,8 s** (8,7 MB de pico); 3.178 filas leídas = 3.086 incluidas + 92 excluidas, 0 vacías, sin validaciones bloqueantes; reporte Excel 4,1 s (488 KB); respuesta JSON 1,5 MB; resultado retenido 19,4 MB (≈6,1 KB por documento, igual que el sintético). La extracción de Odoo se simuló con un espejo simplificado del propio contenedor, así que los estados de conciliación de esta corrida no son representativos (la validación funcional con el contenedor real y discrepancias plantadas está en `docs/QA_VENTAS.md`, sección 5: todas detectadas, residuo 0). Extrapolación lineal al archivo mensual de 7.235 filas: ≈1,5 MB de archivo, ≈4 s de lectura, ≈45 MB retenidos, 3,4 MB de JSON, lo mismo que mide el fixture sintético.
+Se leyó en local el contenedor que entregó el negocio en octubre (3.178 filas, quincena), con el código actual: 630 KB; lectura y validación **1,8 s** (8,7 MB de pico); 3.178 filas leídas = 3.086 incluidas + 92 excluidas, 0 vacías, sin validaciones bloqueantes; reporte Excel 4,1 s (488 KB); respuesta JSON 1,5 MB; resultado retenido 19,4 MB (≈6,1 KB por documento, igual que el sintético). La validación funcional con ese contenedor y discrepancias plantadas está en `docs/QA_VENTAS.md`, sección 5.
+
+### 9.5 Contenedor real del MES COMPLETO de octubre — 7.235 filas (solo en local, agregados)
+
+El 05-11-2026 el negocio entregó el archivo mensual completo (`Ventas_octubre.xlsx`, exportado ese mismo día a las 20:50). Se procesó **solo en el entorno local de auditoría**, nunca se subió al repositorio y aquí se publican únicamente agregados: ni NIT, ni nombres, ni CUFE, ni importes.
+
+**Lectura con el código de producción**
+
+| Dato | Valor |
+|---|---|
+| Archivo | 1,25 MB (11,6 MB descomprimido, 12 partes) |
+| Hoja | `Rp_Doc_20261105_2050`, encabezado en la fila 1, rango `A1:AF7236` |
+| Dialecto XML | espacio de nombres con prefijo `x:` (`<x:row>`, `<x:worksheet>`), distinto del que genera openpyxl. **El lector lo procesa bien**: la revisión previa del ZIP contó las 7.236 filas correctamente (la expresión regular `_FILA_XML` contempla el prefijo) y openpyxl lo abrió sin incidencias |
+| Revisión previa del ZIP (topes de tamaño y filas) | 0,057 s · acepta |
+| Lectura y validación completas | **1,8 s** en caliente (4,4 s la primera, con la carga de módulos); 19,6 MB de pico |
+| Filas | 7.235 totales · 0 vacías · **7.051 incluidas** · 184 excluidas |
+| Columnas | **32 de 32 reconocidas**, ninguna opcional faltante |
+| NIT emisores | **1** (no hay mezcla de empresas) |
+| Prefijos distintos | **12** |
+| Rango de fechas | 01-10-2026 a 31-10-2026 (31 días, dentro del límite de 93) |
+| Validaciones | 7 en «ok», 1 advertencia (corte) y 1 informativa (base derivada). **Ninguna bloqueante** |
+| Integridad de identificación | 7.051 CUFE únicos, **0 documentos sin CUFE**, **0 números repetidos** |
+
+**Composición real (hallazgo relevante para el diseño)**
+
+| Tipo de documento | Filas | % | Tratamiento |
+|---|---|---|---|
+| Factura electrónica | 7.028 | 97,1 % | incluida |
+| Nota de crédito electrónica | 23 | 0,3 % | incluida |
+| Application response (acuses) | 89 | 1,2 % | excluida: no es venta |
+| Documento soporte con no obligados | 61 | 0,8 % | excluida: es compra |
+| Nómina individual | 34 | 0,5 % | excluida: no es venta |
+| **Documento equivalente POS** | **0** | **0 %** | — |
+
+**No hay un solo documento POS en el mes.** Los fixtures sintéticos de las secciones 9.1–9.3 asumían un 68 % de POS, un perfil que no corresponde a esta empresa. Consecuencias: (a) toda la extracción va a `account.move` y `pos.order` devuelve una página vacía (4 `fields_get` + 1 búsqueda sin resultados: coste despreciable, pero son llamadas evitables si se detecta que el contenedor no trae POS); (b) la deduplicación POS↔factura, que es la parte más delicada del motor, **no se ejercita en producción con estos datos**; (c) las mediciones que valen para decidir son las del perfil real (§9.6), no las de §9.1.
+
+**Flujo completo con Odoo espejo del propio contenedor y discrepancias plantadas**
+
+| Etapa | Tiempo | Resultado |
+|---|---|---|
+| Lectura | 1,9 s | 7.051 incluidas |
+| Extracción de Odoo (7.052 `account.move`, 0 `pos.order`) | 1,7 s de CPU | **22 llamadas** (4 `fields_get` + 17 `search_read` + 1 `read`), 11,3 MB de XML |
+| Conjunto canónico | 0,9 s | — |
+| Motor de conciliación | 0,8 s | — |
+| Respuesta JSON | 0,5 s | 3,5 MB · 7.247 documentos |
+| Reporte Excel | 5,6–6,3 s | 914 KB · 10 hojas |
+| **CPU total (incluye la doble lectura)** | **≈12,6–13,9 s** | resultado retenido 43,4 MB · RSS 308 MB |
+
+**Exactitud:** la descomposición **cuadra con residuo 0,00** y los 9 criterios de alcance quedan en verde. Todas las discrepancias plantadas se detectaron una a una: 11 «falta en Odoo» (planté 11), 12 «falta en DIAN» (12), 8 diferencias de valor (8), 6 diferencias de impuestos (6), 5 diferencias de alcance (5) y 7 redondeos dentro de la tolerancia (7). El componente «redondeo dentro de tolerancia» muestra 7.027 documentos en su alcance pero **solo 7 con diferencia real** (campo `con_diferencia`, participación 0,00 %): es el comportamiento correcto, no un defecto. Los 301 «requiere revisión» son un artefacto del espejo —asigné un único cliente ficticio a todos los asientos— y no un hallazgo sobre los datos reales.
+
+### 9.6 Perfil real a escala: 7.235 y 15.000 filas por HTTP con la app real
+
+Fixtures **sintéticos** construidos con la composición medida en §9.5 (97,14 % facturas, 0,32 % notas crédito, 2,54 % excluidas, **sin POS**, 12 prefijos, 1.200 clientes). Servidor real bajo uvicorn, Odoo simulado, tres conciliaciones consecutivas sin reiniciar el proceso. Memoria `VmRSS`/`VmHWM` leída de `/proc`.
+
+| Filas | Corrida | `analizar` | `conciliar` | Respuesta | Llamadas Odoo | `documento` | `reporte` | Memoria del servidor | Residuo |
+|---|---|---|---|---|---|---|---|---|---|
+| 7.235 | base | — | — | — | — | — | — | 130 MB | — |
+| 7.235 | 1 | 1,56 s | 3,64 s | 3,54 MB · 7.247 docs | 24 | 28 ms | 3,30 s · 1.072 KB | 255 MB (pico 258) | 0,00 ✔ |
+| 7.235 | 2 | 1,49 s | 3,79 s | 3,54 MB | 24 | 32 ms | 3,05 s | 303 MB (pico 306) | 0,00 ✔ |
+| 7.235 | 3 | 1,77 s | 3,61 s | 3,54 MB | 24 | 29 ms | 3,32 s | 354 MB (pico 358) | 0,00 ✔ |
+| **15.000** | base | — | — | — | — | — | — | 141 MB | — |
+| **15.000** | 1 | 2,96 s | 7,38 s | 7,11 MB · 15.012 docs | 39 | 69 ms | 7,50 s · 2.170 KB | 387 MB (pico 398) | 0,00 ✔ |
+| **15.000** | 2 | 3,23 s | 8,10 s | 7,11 MB | 39 | 67 ms | 7,09 s | 479 MB (pico 492) | 0,00 ✔ |
+| **15.000** | 3 | 3,25 s | 7,74 s | 7,11 MB | 39 | 65 ms | 7,47 s | **585 MB (pico 597)** | 0,00 ✔ |
+
+**Efecto de `VENTAS_MAX_RESULTADOS` con 15.000 filas** (cuatro conciliaciones seguidas, misma prueba):
+
+| Valor | RSS tras 1 | tras 2 | tras 3 | tras 4 | ¿Cabe en 512 MB? |
+|---|---|---|---|---|---|
+| 5 (actual) | 387 | 479 | **585** | — | **No**: supera el límite en la tercera |
+| 2 | 385 | 481 | 492 (pico 520) | 504 (**pico 539**) | **No**: el pico se pasa |
+| **1** | 386 | 419 | 423 (pico 449) | 430 (**pico 449**) | **Sí**, estable al 88 % del límite |
+
+**Lectura.** Con el perfil real, un mes típico (7.235 filas) cuesta ≈8,5 s de CPU y deja ≈50 MB por conciliación: cabe sin problema. Un mes en el techo del negocio (15.000 facturas) cuesta ≈18 s de CPU y deja ≈100 MB por conciliación: con la configuración actual **se sale de los 512 MB a la tercera**, y con `VENTAS_MAX_RESULTADOS=1` se queda estable en 449 MB de pico. Trasladado al plan de Render (0,15 CPU): esos 18 s de CPU equivalen a ≈2 minutos, más 40–120 s de Odoo (39 llamadas secuenciales) y hasta 1 minuto de arranque en frío → **entre 3,5 y 5 minutos sin ninguna señal en pantalla**.
+
+### 9.7 Optimización de la lectura: implementada y medida (06-11-2026)
+
+A petición del usuario («optimizar la lectura de los datos lo que más se pueda técnicamente») se optimizó **solo la ruta de lectura**. No se tocó el comparador de compras, ni las expectativas de sus pruebas, ni la configuración, ni producción.
+
+**Qué se hizo.** Un lector de `.xlsx` propio (`backend/ventas/lector_xlsx.py`) que recorre el XML de la hoja con `find`/`split` sobre bytes y resuelve las cadenas compartidas por índice, en vez de que openpyxl construya un objeto por celda a través de ElementTree. La hoja se lee del zip **a trozos de 256 KB**, nunca entera: el XML descomprimido de un mes real pesa 10,2 MB y de 15.000 filas unos 21 MB, y la memoria es el recurso que primero se agota. Es una **ruta rápida con reserva**: en cuanto encuentra algo que no cubre (un formato de fecha aplicado a un número, una entidad desconocida, un XML que no encaja) lanza `NoAplicable`, se registra en el log y la lectura continúa por openpyxl, que sigue siendo el camino de referencia. Además se precompilaron las expresiones regulares de `normalizacion.py`, se memoizó `texto_clave` y se añadieron rutas directas para los dos formatos de fecha que trae el contenedor.
+
+**Ganancia medida** (mismo equipo, misma corrida, desactivando la ruta rápida para obtener el «antes»; mejor de tres):
+
+| Archivo | Paso | openpyxl | Ruta rápida | Mejora |
+|---|---|---|---|---|
+| Real de octubre, 7.235 filas | solo filas | 1,09 s · pico 5,6 MB | **0,44 s** · pico 5,8 MB | 2,5x |
+| Real de octubre, 7.235 filas | `leer_contenedor` | 1,48 s · pico 15,4 MB | **0,68 s** · pico 15,1 MB | **2,2x**, memoria −2 % |
+| Perfil real, 15.000 filas | solo filas | 1,16 s · pico 10,1 MB | **0,47 s** · pico 9,6 MB | 2,5x |
+| Perfil real, 15.000 filas | `leer_contenedor` | 1,96 s · pico 30,8 MB | **1,08 s** · pico 30,4 MB | **1,8x**, memoria −1 % |
+| Sintético, 100.000 filas | solo filas | 14,09 s · pico 62,4 MB | **5,11 s** · pico 55,2 MB | 2,8x |
+
+El pico de memoria queda **igual o por debajo** del de openpyxl en todos los tamaños, que era la condición: una primera versión que partía la hoja entera con `split` llegaba a 36 MB en el archivo real (frente a 19,6 MB), y por eso se rehízo en streaming.
+
+**Lo que esto no arregla.** La lectura era el 15–20 % del flujo, no el cuello. Con 15.000 filas y `VENTAS_MAX_RESULTADOS=5` el proceso sigue pasándose de los 512 MB en la tercera conciliación (540 MB medidos tras la optimización, en este entorno), y con `=1` se estabiliza en 390 MB. **La conclusión de la §9.6 no cambia: el límite sigue siendo la memoria del resultado guardado, no la lectura**, y la mitigación de la fase 0 sigue siendo necesaria.
+
+**Verificación.** 240 pruebas unitarias pasan (la única que falla es la de compras que ya fallaba antes de estos cambios, comprobado volviendo a la copia sin modificar); 21/21 casos de QA de interfaz con navegador; y un arnés de equivalencia de 18 casos que compara la ruta rápida con openpyxl **celda a celda y con el tipo de cada valor** —incluido el archivo real de octubre, 7.236 filas idénticas— que se dejó fijado en el repositorio como `backend/test_ventas_lector_xlsx.py` (14 pruebas: prefijo de espacio de nombres `x:`, referencias numéricas de carácter como `&#243;`, orden de atributos de la relación de la hoja, filas sin atributos y con huecos, hoja mayor que el trozo de lectura, los tres casos en los que debe ceder, y dos que comprueban que la ruta rápida **se usa de verdad** y que un fallo suyo no rompe la lectura).
+
+> **Nota sobre la comparación con la §9.6.** Las cifras de la §9.6 se tomaron con Python 3.10.11 y pandas 2.0.3 (como producción). El contenedor de auditoría se reconstruyó después con Python 3.13.16 y pandas 3.0.5, así que los tiempos HTTP de la §9.7 **no son comparables uno a uno** con los de la §9.6: parte de la mejora que se vería al compararlos es del intérprete. La ganancia atribuible a este cambio es la de la tabla de arriba, medida con y sin la ruta rápida en el mismo entorno y en la misma corrida.
 
 ---
 
@@ -349,15 +450,19 @@ Se leyó en local el contenedor real que entregó el negocio en octubre (3.178 f
 
 ## 11. Capacidad actual demostrada y límites no verificados
 
-| | Demostrado (local, sintético) | No verificado |
+**El techo real del negocio son 15.000 facturas al mes** (dato del usuario, 05-11-2026), no los 50.000 ni los 100.000 documentos que planteaba el prompt de auditoría como objetivo de ingeniería. Esa cifra cambia el problema: los topes de diseño (10 MB por archivo, 100.000 filas, 50.000 registros por modelo) **sobran con holgura**, y el único límite que se alcanza es la **memoria de 512 MB del plan de Render**.
+
+| | Demostrado | No verificado |
 |---|---|---|
-| Exactitud | Residuo 0 y conteos trazables de 1.000 a 100.000 filas | — |
-| 7.235 filas | Termina en ≈9 s de CPU + Odoo; 3,3 MB de respuesta; 46 MB retenidos | Tiempo real en Render (CPU del plan) y latencia de Odoo |
-| 15.000 filas | Termina; ≈18 s CPU; 95 MB retenidos + 117 MB pico en reporte | Si cabe en 512 MB junto con la base de 108 MB y otros resultados (probablemente no) |
-| 50.000 filas | Termina; ≈62 s CPU; 317 MB retenidos; 400 MB pico en reporte; 105 llamadas a Odoo | Inviable en 512 MB; requiere ≥ 2 GB y la fase 2 |
-| 100.000 filas | Rechazado por diseño (10 MB / 50.000 por modelo). Con topes retirados: ≈124 s CPU, 0,8 GB pico, 634 MB retenidos | Requiere fase 3 |
-| Concurrencia Ventas | Hilos de Starlette (40): varias conciliaciones en paralelo no bloquean el servidor | Memoria acumulada de conciliaciones simultáneas |
+| Exactitud | Residuo 0 y conteos trazables de 1.000 a 100.000 filas, y con el **contenedor real de octubre** (§9.5) | — |
+| **7.235 filas (octubre real)** | Archivo 1,25 MB; lectura 1,8 s; flujo completo ≈8,5 s de CPU; 3,5 MB de respuesta; ≈50 MB retenidos por conciliación; memoria 130 → 255 → 303 → 354 MB en tres conciliaciones; residuo 0 | Tiempo real en Render (0,15 CPU) y latencia de Odoo |
+| **15.000 filas (techo del negocio)** | Archivo ≈2,1 MB; flujo completo ≈18 s de CPU; 7,1 MB de respuesta; ≈100 MB retenidos por conciliación. Con la configuración actual (`VENTAS_MAX_RESULTADOS=5`) la memoria llega a **585 MB a la tercera conciliación → supera los 512 MB del plan**. Con `=2` llega a 539 MB (también se pasa). Con **`=1` se estabiliza en 423–449 MB y cabe** | Tiempo real en Render; margen para una comparación de Compras simultánea |
+| 50.000 filas | Termina; ≈62 s CPU; 317 MB retenidos; 400 MB pico en reporte; 105 llamadas a Odoo | Fuera del alcance real del negocio; requeriría ≥ 2 GB y la fase 2 |
+| 100.000 filas | Rechazado por diseño (10 MB / 50.000 por modelo). Con topes retirados: ≈124 s CPU, 0,8 GB pico, 634 MB retenidos | Fuera del alcance real del negocio |
+| Concurrencia Ventas | Hilos de Starlette (40): varias conciliaciones en paralelo no bloquean el servidor | Memoria acumulada de conciliaciones simultáneas (con 15.000 filas, dos a la vez superan el plan) |
 | Concurrencia Compras | 2 simultáneas → interbloqueo (R-6); 1 en curso bloquea el bucle (R-5) | — |
+
+**Conclusión de capacidad.** Un mes típico (7.235 filas) funciona hoy. Un mes en el techo (15.000 facturas) **no cabe de forma fiable en el plan actual**: la segunda conciliación queda al 94 % del límite y la tercera lo supera. La corrección inmediata y gratuita es `VENTAS_MAX_RESULTADOS=1`; la definitiva es reducir lo que retiene cada resultado (fase 2) o subir a un plan con 2 GB.
 
 ---
 
@@ -421,11 +526,15 @@ Principios:
 
 Orden según la prioridad de la sección 12 del prompt de auditoría. Ninguna fase se implementa sin aprobación.
 
-### Fase 0 — Completar la evidencia (sin código; medio día)
-- Plan, métricas y eventos de Render ya están leídos (sección 4.2): plan `free`, 0,15 CPU, 512 MB, sin OOM observado.
+> **Reenfoque tras conocer el techo real del negocio (15.000 facturas al mes).** El objetivo deja de ser «escalar a 100.000» y pasa a ser «que el peor mes termine siempre, quepa en memoria y se vea el progreso». Eso elimina la fase 3 del plan original y reduce el alcance de la fase 2.
+
+### Fase 0 — Dos cambios de configuración, hoy, sin código (minutos)
+1. **`VENTAS_MAX_RESULTADOS=1`** en las variables de entorno de Render. Medido (§9.6): con 15.000 filas el valor actual (5) lleva el proceso a 585 MB y lo mata; con 2 el pico llega a 539 MB y también se pasa; con 1 se estabiliza en 449 MB. Efecto secundario: solo se conserva la última conciliación, así que descargar el reporte de una anterior obligará a repetirla. Es reversible en cualquier momento.
+2. **Pasar el plan de `free` a `starter`**: quita el *spin-down* (se acabó el arranque en frío de ≈1 minuto) y triplica la CPU (0,15 → 0,5), con lo que los ≈18 s de CPU del peor mes pasan de ≈2 min a ≈36 s. La memoria sigue en 512 MB, así que el punto 1 sigue haciendo falta. Si se prefiere holgura de memoria en vez de ajustar la caché, *Standard* da 2 GB.
+
+Además, para cerrar las dos hipótesis abiertas (sin código):
 - Ejecutar la prueba de aislamiento del error del navegador (sección 3).
-- Medir **una conciliación real completa** con la pestaña *Network* abierta y sin recargar la página, y leer después en el log de Render la línea `POST /api/ventas/conciliar … 200` con su hora: da el tiempo real de extremo a extremo y, dividiendo por `odoo.llamadas`, la latencia por página de Odoo (H-3).
-- Decisión inmediata y reversible, sin código: pasar el servicio a *Starter* (sin *spin-down*, 0,5 CPU) elimina el arranque en frío de ≈1 minuto y triplica la CPU. Con 512 MB sigue siendo necesaria la fase 2 para 15.000+ filas. Alternativa de coste cero mientras tanto: `VENTAS_MAX_RESULTADOS=2` en las variables de entorno para que nunca convivan cinco conciliaciones en memoria.
+- Medir **una conciliación real completa** con la pestaña *Network* abierta y sin recargar la página, y leer después en el log de Render la línea `POST /api/ventas/conciliar … 200` con su hora: da el tiempo real de extremo a extremo y, dividiendo por las `odoo.llamadas` del JSON (24 con el archivo de octubre), la latencia por página de Odoo (H-3).
 
 ### Fase 1 — Evitar bloqueo y truncamiento (código pequeño; 2–3 días)
 1. **Compras**: ejecutar `comparar_facturas_odoo` y `generar_excel_reporte` en hilo (`run_in_threadpool`) y usar un executor distinto (o `max_workers` ≥ lotes + peticiones) para los lotes de `fetch_invoices`; reporte en memoria (`generar_excel_reporte_bytes`) en vez de la ruta fija en `/tmp`. Sin tocar `comparador.py` ni sus pruebas.
@@ -434,19 +543,17 @@ Orden según la prioridad de la sección 12 del prompt de auditoría. Ninguna fa
 4. **Frontend**: `AbortController` con timeout configurable, mensaje claro cuando el servidor no responde y cuando el resultado expiró (reinicio).
 5. Pruebas: las existentes + una prueba de concurrencia en Compras (dos comparaciones a la vez deben terminar) + prueba de que el log registra las etapas.
 
-### Fase 2 — Ejecuciones asíncronas con progreso (Ventas; 1–2 semanas)
+### Fase 2 — Progreso visible y memoria acotada (Ventas; 1–2 semanas)
 1. `POST /api/ventas/conciliar` devuelve `run_id` al instante; un `ThreadPoolExecutor` dedicado (1–2 trabajos) ejecuta el flujo actual.
 2. `GET /api/ventas/ejecucion/{run_id}`: etapa, progreso (páginas de Odoo leídas / estimadas), duración, error.
-3. `GET /api/ventas/resultado`: resumen completo + filas paginadas y filtrables en servidor (los filtros actuales del frontend se mueven al backend sin cambiar su semántica).
-4. Extractor: progreso por página y paginación por `id` (keyset); lectura de `account.move` y `pos.order` en paralelo con conexiones independientes (dos `ServerProxy`), manteniendo el orden determinista del resultado.
-5. Frontend: barra de progreso por etapa, cancelación, recuperación de la ejecución por `run_id` al recargar.
-6. Pruebas: suite actual intacta + pruebas de la cola (estado, cancelación, expiración) + comparación bit a bit del JSON del resultado contra el flujo síncrono para los 280 documentos de QA y los fixtures de 7.235 y 50.000.
+3. **Reducir lo que retiene cada resultado** (≈100 MB con 15.000 filas): conservar solo las filas de conciliación y un índice, en vez de la lectura completa del contenedor y el conjunto canónico; generar el Excel una vez y descartarlo. Objetivo medible: ≤ 40 MB por resultado con 15.000 filas, que permite volver a `VENTAS_MAX_RESULTADOS=3` dentro de 512 MB.
+4. `GET /api/ventas/resultado`: resumen completo + filas paginadas y filtrables en servidor cuando haya más de 5.000 filas (los filtros actuales del frontend se mueven al backend sin cambiar su semántica). Con 15.000 filas la respuesta actual es de 7,1 MB.
+5. Extractor: progreso por página y paginación por `id` (keyset); **omitir la consulta a `pos.order` cuando el contenedor no trae ningún documento POS** (el caso real de esta empresa: ahorra 4 `fields_get` y una búsqueda por conciliación).
+6. Frontend: barra de progreso por etapa, cancelación, recuperación de la ejecución por `run_id` al recargar.
+7. Pruebas: suite actual intacta + pruebas de la cola (estado, cancelación, expiración) + comparación bit a bit del JSON del resultado contra el flujo síncrono para los 280 documentos de QA y los fixtures de perfil real de 7.235 y 15.000.
 
-### Fase 3 — Persistencia y escala (2 semanas)
-1. Tablas `ventas_ejecuciones` y `ventas_filas` en la Postgres existente; el reporte se guarda como bytes o se regenera.
-2. Límite de retención configurable; limpieza programada.
-3. Pruebas de estrés con fixtures de 50.000 y 100.000 (sección 17) en un servicio de staging del mismo plan que producción.
-4. Si 100.000 sigue siendo objetivo: subir `MAX_FILAS`/`LecturaTruncada` solo tras medir memoria con persistencia activa, y elevar el tope de 10 MB a ~20 MB (un contenedor real de 100.000 filas pesa ≈16–20 MB).
+### ~~Fase 3 — Persistencia y escala~~ (descartada)
+Con un techo de 15.000 facturas al mes, la persistencia en Postgres y las pruebas de estrés a 50.000–100.000 **no son necesarias**. Los topes de diseño (10 MB, 100.000 filas, 50.000 registros por modelo) quedan muy por encima del uso real y se mantienen tal cual. Si el volumen creciera de forma sostenida por encima de 25.000 documentos al mes, conviene retomar esta fase: tablas `ventas_ejecuciones` y `ventas_filas` en la Postgres existente y pruebas de estrés en staging.
 
 ### Fase 4 — Opcional
 - Migrar el transporte a JSON-2 antes de Odoo 20 (la función `ejecutar` de `OdooSoloLectura` es el único punto de cambio).
@@ -491,8 +598,9 @@ Ya obtenido con el conector de Render (05-11-2026): plan, límites de CPU y memo
 1. **Fecha y hora exactas** de los intentos de carga anteriores a hoy: el log de Render del plan gratuito ya no conserva nada anterior al 05-11, así que esos intentos no son verificables; los próximos sí lo serán si se anota la hora.
 2. **Pestaña Network del navegador** durante una carga completa sin recargar: estado final de `analizar-contenedor` y `conciliar` (200 / 502 / *failed* / *canceled*), tiempo y tamaño de la respuesta. Es la evidencia que distingue «el navegador abandonó» de «el servidor no respondió».
 3. **Cuál módulo** se estaba usando (Ventas: pestaña «Ventas DIAN vs Odoo»; Compras: «Comparaciones → API Odoo») y si había otra comparación en curso en otra pestaña o por otro usuario.
-4. **El archivo de 7.235 filas** (o uno equivalente del mismo tipo de export) para medirlo tal cual; solo se usaría en local y no se versiona.
-5. **Latencia real de Odoo**: tiempo de una conciliación completa (hora de inicio y línea `POST /api/ventas/conciliar … 200` en el log) para calcular segundos por página de 500 registros.
-6. **Extensiones de Chrome instaladas** (para la prueba de aislamiento del error del navegador).
-7. Confirmar el objetivo de 100.000 documentos: hoy el tope de 10 MB del archivo lo impide (un contenedor de 100.000 filas pesa ≈16–20 MB) antes que cualquier otro límite.
-8. Decisión sobre el plan de Render (*Starter* elimina el *spin-down*; *Standard* da 2 GB y 1 CPU) y sobre `NEON_DB_URL`, ausente en producción (los módulos de correo y órdenes de compra no tienen base de datos).
+4. ~~El archivo de 7.235 filas~~ — **entregado y medido el 05-11-2026** (§9.5).
+5. ~~Confirmar el objetivo de 100.000 documentos~~ — **resuelto**: el techo del negocio son 15.000 facturas al mes, así que el objetivo de 50.000–100.000 queda descartado (§11 y fase 3).
+6. **Latencia real de Odoo**: tiempo de una conciliación completa (hora de inicio y línea `POST /api/ventas/conciliar … 200` en el log) para calcular segundos por página de 500 registros.
+7. **Extensiones de Chrome instaladas** (para la prueba de aislamiento del error del navegador).
+8. Decisión sobre el plan de Render (*Starter* elimina el *spin-down*; *Standard* da 2 GB y 1 CPU), sobre `VENTAS_MAX_RESULTADOS=1` (recomendado hoy) y sobre `NEON_DB_URL`, ausente en producción (los módulos de correo y órdenes de compra no tienen base de datos).
+9. **¿La empresa emitirá documentos equivalentes POS?** El mes de octubre no tiene ninguno. Si nunca va a haberlos, la lectura de `pos.order` puede omitirse; si se prevén, la deduplicación POS↔factura debe validarse con datos reales antes de confiar en ella (hoy solo está probada con fixtures).
