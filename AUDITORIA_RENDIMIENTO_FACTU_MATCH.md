@@ -16,8 +16,9 @@ Convenciones: **[HECHO]** = observado o medido en esta auditoría; **[HIPÓTESIS
 6. **Compras tiene dos defectos de estabilidad que afectan a todo el servidor** [HECHO, reproducidos en local]: (a) `/odoo/comparar` y `/odoo/descargar-reporte` ejecutan pandas y la generación del Excel **dentro del bucle de eventos**, bloqueando todas las peticiones de todos los usuarios (5 s de comparación y 14 s de reporte medidos con 7.235 filas, durante los cuales nadie es atendido); (b) dos comparaciones simultáneas **interbloquean** el executor de 2 hilos y Compras deja de responder hasta reiniciar.
 7. **El archivo real del mes de octubre se midió el 05-11-2026 y confirma el diagnóstico** [HECHO, §9.5]: 7.235 filas, 1,25 MB, se lee en 1,8 s, 32 de 32 columnas, un solo NIT emisor, ninguna validación bloqueante, residuo 0 y todas las discrepancias plantadas detectadas. Dos hallazgos del archivo real: usa un dialecto XML con prefijo `x:` que el lector procesa correctamente, y **no contiene ningún documento POS** (97,1 % facturas electrónicas), de modo que el perfil con el que se habían hecho las pruebas sintéticas no era el de esta empresa.
 8. **El techo del negocio son 15.000 facturas al mes, no 50.000 ni 100.000** (dato del usuario). Eso reenfoca el problema: los topes de diseño sobran, y el único límite que se alcanza es la **memoria**. Medido con el perfil real [HECHO, §9.6]: con 15.000 filas cada conciliación retiene ≈100 MB y, con la configuración actual (`VENTAS_MAX_RESULTADOS=5`), el proceso llega a **585 MB en la tercera conciliación y Render lo mata** (límite 512 MB). Con `=2` el pico sigue pasándose (539 MB); con **`=1` se estabiliza en 449 MB y cabe**. Un mes típico de 7.235 filas sí cabe hoy (354 MB tras tres conciliaciones).
-9. **La lectura ya está optimizada y no era el cuello** [HECHO, §9.7, 06-11-2026]: a petición del usuario se reescribió la lectura del contenedor con un lector de `.xlsx` propio que recorre el XML a trozos de 256 KB sin cargarlo entero, con reserva automática a openpyxl si encuentra algo que no cubre. `leer_contenedor` pasó de 1,48 s a **0,68 s** con el archivo real (2,2x) y de 1,96 s a **1,08 s** con 15.000 filas (1,8x), con el pico de memoria igual o algo menor. Verificado con 240 pruebas unitarias, 21/21 de QA de interfaz y un arnés que compara la ruta rápida con openpyxl celda a celda y por tipo en 18 casos, el archivo real incluido. **Pero el diagnóstico no cambia**: la lectura era el 15–20 % del flujo, así que con 15.000 filas el proceso sigue superando los 512 MB a la tercera conciliación si no se aplica el punto siguiente.
-10. **Plan recomendado** (sección 15), ya reenfocado al techo de 15.000 facturas: **hoy mismo y sin código**, poner `VENTAS_MAX_RESULTADOS=1` en Render (evita el agotamiento de memoria medido) y pasar el plan de `free` a `starter` (quita el arranque en frío y triplica la CPU: ≈18 s de CPU pasan de ≈2 min a ≈36 s). Después: fase 1, quitar los bloqueos del bucle de eventos y el interbloqueo en Compras, leer el Excel una sola vez, registrar duración por etapa y dar feedback y timeout en el frontend; fase 2, ejecuciones asíncronas con progreso y resultados paginados, y reducir lo que retiene cada resultado. **La fase 3 (persistencia y escala a 50.000–100.000) deja de ser necesaria**: con 15.000 como techo real, basta con que quepan dos o tres conciliaciones en memoria y que el usuario vea el progreso.
+9. **Primera medición EN PRODUCCIÓN con el archivo real** [HECHO, §9.8, 05-11-2026 21:01–21:03]: el usuario validó y concilió su mes de octubre mientras se observaba el servicio. Validar costó **19,7 s** y conciliar **55,5 s** — **75,2 s de espera sin ninguna señal en pantalla**—, con la CPU al **64–68 % del límite de 0,15** (estrangulada, no colgada) y la memoria subiendo de **153 a 252 MB: +99 MB retenidos por una sola conciliación**. El resultado coincidió exactamente con la medición local (7.051 incluidos, 184 excluidos, 32 de 32 columnas). **Esto corrige a la baja la estimación de la §9.6**: con el archivo real bastan **cuatro conciliaciones en una misma hora** (~549 MB) para que Render mate el proceso, no cinco. Diez minutos antes se observó además, en vivo, el incidente de R-10: una carga lanzada durante el arranque en frío **nunca llegó al servidor** (no hay `POST` en el log) y, al no haber timeout en el frontend, la interfaz quedó en `VALIDANDO…` **7,8 minutos** mientras sondas sintéticas respondían en 206–423 ms.
+10. **La lectura ya está optimizada y no era el cuello** [HECHO, §9.7, 06-11-2026]: a petición del usuario se reescribió la lectura del contenedor con un lector de `.xlsx` propio que recorre el XML a trozos de 256 KB sin cargarlo entero, con reserva automática a openpyxl si encuentra algo que no cubre. `leer_contenedor` pasó de 1,48 s a **0,68 s** con el archivo real (2,2x) y de 1,96 s a **1,08 s** con 15.000 filas (1,8x), con el pico de memoria igual o algo menor. Verificado con 240 pruebas unitarias, 21/21 de QA de interfaz y un arnés que compara la ruta rápida con openpyxl celda a celda y por tipo en 18 casos, el archivo real incluido. **Pero el diagnóstico no cambia**: la lectura era el 15–20 % del flujo, así que con 15.000 filas el proceso sigue superando los 512 MB a la tercera conciliación si no se aplica el punto siguiente.
+11. **Plan recomendado** (sección 15), ya reenfocado al techo de 15.000 facturas: **hoy mismo y sin código**, poner `VENTAS_MAX_RESULTADOS=1` en Render (evita el agotamiento de memoria medido) y pasar el plan de `free` a `starter` (quita el arranque en frío y triplica la CPU: ≈18 s de CPU pasan de ≈2 min a ≈36 s). Después: fase 1, quitar los bloqueos del bucle de eventos y el interbloqueo en Compras, leer el Excel una sola vez, registrar duración por etapa y dar feedback y timeout en el frontend; fase 2, ejecuciones asíncronas con progreso y resultados paginados, y reducir lo que retiene cada resultado. **La fase 3 (persistencia y escala a 50.000–100.000) deja de ser necesaria**: con 15.000 como techo real, basta con que quepan dos o tres conciliaciones en memoria y que el usuario vea el progreso.
 
 ---
 
@@ -199,6 +200,7 @@ Cada hallazgo: evidencia, componente, causa, impacto, prioridad (P0 crítico · 
 - **Impacto:** con el límite real de 512 MB (sección 4.2): una conciliación mensual de 7.235 filas cabe; la quinta en una misma hora, o la segunda de 15.000 filas, supera el límite → Render mata el proceso («Ran out of memory») → la petición en curso se corta, el navegador recibe un fallo de red y las conciliaciones guardadas desaparecen. En las métricas de producción el pico observado fue 209 MB, es decir, todavía no ha ocurrido.
 - **Solución:** fase 2: guardar solo lo necesario para `/documento` y el reporte (filas compactas + índice), generar el Excel una vez y descartarlo; fase 3: persistir en Postgres y reducir `VENTAS_MAX_RESULTADOS` a 1–2 mientras tanto (variable de entorno, sin código).
 - **Validación:** `VmHWM` del proceso servidor tras 5 conciliaciones de 7.235 filas < 60 % del plan.
+- **Evidencia DE PRODUCCIÓN (05-11-2026, §9.8):** una conciliación real de 7.051 documentos llevó el servicio de **153 MB a 252 MB** y no liberó nada. A ese ritmo la **cuarta** conciliación de la misma hora alcanza ~549 MB y supera el límite de 512 MB. El riesgo deja de ser una extrapolación: está medido en el servicio que usa el negocio.
 
 ### R-3 · El Excel se lee dos veces por conciliación (P2)
 - **Evidencia:** `ventas_engine.js` → `alElegirArchivo` sube el archivo a `analizar-contenedor`; `conciliar()` lo vuelve a subir y `router._conciliar` llama otra vez a `leer_contenedor`. 2,7–4,4 s extra por conciliación de 7.235 filas y el doble de subida.
@@ -425,6 +427,61 @@ El pico de memoria queda **igual o por debajo** del de openpyxl en todos los tam
 **Verificación.** 240 pruebas unitarias pasan (la única que falla es la de compras que ya fallaba antes de estos cambios, comprobado volviendo a la copia sin modificar); 21/21 casos de QA de interfaz con navegador; y un arnés de equivalencia de 18 casos que compara la ruta rápida con openpyxl **celda a celda y con el tipo de cada valor** —incluido el archivo real de octubre, 7.236 filas idénticas— que se dejó fijado en el repositorio como `backend/test_ventas_lector_xlsx.py` (14 pruebas: prefijo de espacio de nombres `x:`, referencias numéricas de carácter como `&#243;`, orden de atributos de la relación de la hoja, filas sin atributos y con huecos, hoja mayor que el trozo de lectura, los tres casos en los que debe ceder, y dos que comprueban que la ruta rápida **se usa de verdad** y que un fallo suyo no rompe la lectura).
 
 > **Nota sobre la comparación con la §9.6.** Las cifras de la §9.6 se tomaron con Python 3.10.11 y pandas 2.0.3 (como producción). El contenedor de auditoría se reconstruyó después con Python 3.13.16 y pandas 3.0.5, así que los tiempos HTTP de la §9.7 **no son comparables uno a uno** con los de la §9.6: parte de la mejora que se vería al compararlos es del intérprete. La ganancia atribuible a este cambio es la de la tabla de arriba, medida con y sin la ruta rápida en el mismo entorno y en la misma corrida.
+
+---
+
+### 9.8 PRIMERA MEDICIÓN EN PRODUCCIÓN con el archivo real — 05-11-2026, 21:01–21:03 (Bogotá) [HECHO]
+
+Hasta aquí todo lo medido era local y sintético. Esta sección es distinta: es el **flujo real, en producción, con el archivo real de octubre**, observado mientras ocurría desde el navegador del usuario (Resource Timing) y desde Render (log de la aplicación y métricas de CPU y memoria). Se publican solo agregados: ni NIT, ni nombres, ni CUFE, ni importes.
+
+**Tiempos que esperó el usuario**
+
+| Paso | Duración real |
+|---|---|
+| `POST /api/ventas/analizar-contenedor` (7.235 filas, 1,25 MB) | **19,7 s** |
+| `POST /api/ventas/conciliar` (contra Odoo real) | **55,5 s** |
+| **Total** | **75,2 s sin ninguna señal de progreso en pantalla** |
+
+**El resultado coincide exactamente con la medición local** (§9.5): 7.051 documentos incluidos, 184 excluidos, 32 de 32 columnas reconocidas, 5 tipos, hoja `Rp_Doc_20261105_2050`, rango 01-10-2026 → 31-10-2026, ninguna validación bloqueante. El motor se comporta igual en producción que en el entorno de auditoría.
+
+**Recursos del servicio durante esos 75 s** (métricas de Render, resolución de 30 s)
+
+| Métrica | Valor | Contra el límite |
+|---|---|---|
+| CPU, pico | 0,096 → **0,102** | **64–68 % de 0,15**: el proceso corre estrangulado, no colgado |
+| Memoria, antes | 153 MB | 30 % de 512 MB |
+| Memoria, después | **252 MB** | 49 % de 512 MB |
+| **Retenido por UNA conciliación** | **+99 MB** | y ahí sigue: no se libera |
+
+**Esta es la medición más importante del informe, y corrige a la baja la estimación de la §9.6.** Allí, con fixtures sintéticos, se calculó que el problema de memoria aparecía en la 3.ª conciliación con 15.000 filas y en la 5.ª con 7.235. En producción, con el archivo real de 7.051 documentos y una base de 153 MB:
+
+| Conciliación en la misma hora | Memoria estimada | ¿Cabe en 512 MB? |
+|---|---|---|
+| 1.ª (medida) | **252 MB** | sí |
+| 2.ª | ~351 MB | sí |
+| 3.ª | ~450 MB | al límite |
+| **4.ª** | **~549 MB** | **no: Render mata el proceso** |
+
+Es decir: **cuatro conciliaciones del mes real en una misma hora bastan hoy para tumbar el servicio** y perder los resultados guardados. Con `VENTAS_MAX_RESULTADOS=1` el problema desaparece, porque solo se conserva la última. Es el argumento más fuerte a favor de la fase 0, y ya no es una extrapolación de laboratorio.
+
+**Incidente observado en vivo 10 minutos antes: la petición que nunca llegó [HECHO, confirma R-10]**
+
+A las 20:51:50 el usuario abrió la página y soltó el archivo casi de inmediato. El log de Render muestra que **esa carga despertó el servicio** (`Running 'uvicorn main:app'` a las 20:52:08, `Application startup complete` a las 20:52:32) y que, después del arranque, **no entró ningún `POST /api/ventas/analizar-contenedor`**: solo dos `GET /api/ventas/estado-ia 200`. El POST se perdió durante los ~24 s de arranque.
+
+En el navegador, `alElegirArchivo` hace `await api('/api/ventas/analizar-contenedor', …)` **sin timeout**, de modo que la promesa nunca se resolvió ni se rechazó: la interfaz se quedó en `VALIDANDO…` durante **7,8 minutos**, con el botón de conciliar deshabilitado y sin ningún mensaje. Se comprobó que no era un fallo del backend lanzando sondas sintéticas en paralelo, que respondieron en 206–423 ms mientras la interfaz seguía bloqueada.
+
+Esto confirma R-10 con evidencia de producción y añade un matiz que faltaba: **no hace falta que el servidor tarde; basta con que una petición se pierda durante el arranque en frío para que la interfaz quede inservible hasta que el usuario recargue**. Un timeout en el frontend convierte 8 minutos de pantalla muerta en un mensaje de error a los 60 s.
+
+**Pruebas de contorno ejecutadas contra producción** (datos sintéticos generados en el navegador; ningún dato real salió del equipo del usuario)
+
+| Prueba | Resultado | Tiempo |
+|---|---|---|
+| 5 filas válidas | 5 incluidos, 0 excluidos, no bloqueante | 223 ms |
+| 1.000 filas (1,2 MB) | 1.000 incluidos, 0 excluidos | 3,29 s |
+| Archivo que no es Excel | **400** «debe ser un archivo .xlsx o .xls» | 269 ms |
+| Archivo de 11 MB | **413** «supera el máximo de 10 MB» | 3,83 s |
+
+Los dos caminos de error responden rápido y **el navegador puede leer el cuerpo de la respuesta**, así que un rechazo sí se le muestra al usuario. Eso descarta que el bloqueo de `VALIDANDO…` fuera un error invisible: la petición no fue rechazada, simplemente nunca llegó.
 
 ---
 

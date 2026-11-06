@@ -169,6 +169,8 @@ Entorno **PROD** = `https://factu-match.onrender.com` desde el origen `https://f
 
 **PERF-08 · Lectura optimizada (06-11-2026).** Tras reescribir la lectura del contenedor (informe de rendimiento §9.7), `leer_contenedor` pasó de 1,48 s a **0,68 s** con el archivo real de octubre (7.235 filas, 2,2x) y de 1,96 s a **1,08 s** con 15.000 filas (1,8x), con el pico de memoria igual o algo menor porque la hoja se lee del zip a trozos y no entera. **PASS**, con tres salvedades: (a) la ruta rápida cede a openpyxl cuando encuentra algo que no cubre, y hay pruebas que verifican tanto que cede como que **no** cede en el contenedor normal; (b) la equivalencia con openpyxl se comprueba celda a celda y por tipo en 18 casos, el archivo real incluido, y 14 de esas comprobaciones quedaron fijadas en `backend/test_ventas_lector_xlsx.py`; (c) **no cambia el veredicto de PERF-04**: con 15.000 filas y `VENTAS_MAX_RESULTADOS=5` el proceso sigue excediendo los 512 MB (540 MB en la tercera conciliación tras la optimización), porque lo que llena la memoria es el resultado guardado, no la lectura. Con `=1` se estabiliza en 390 MB.
 
+**PERF-09 · PRODUCCIÓN, archivo real, 05-11-2026 21:01–21:03 (Bogotá).** Primera medición del flujo real en el servicio que usa el negocio, observada desde el navegador y desde Render (informe de rendimiento §9.8): `analizar-contenedor` **19,7 s**, `conciliar` **55,5 s**, **75,2 s de espera total sin señal de progreso**; CPU al **64–68 % del límite de 0,15**; memoria de **153 a 252 MB (+99 MB retenidos por una conciliación)**. Resultado idéntico al local: 7.051 incluidos, 184 excluidos, 32/32 columnas, ninguna validación bloqueante. **PASS funcional, FAIL de capacidad**: a +99 MB por conciliación, la **cuarta** de la misma hora (~549 MB) supera los 512 MB y Render mata el proceso. Diez minutos antes se observó en vivo el fallo de R-10/D-10: una carga lanzada durante el arranque en frío **nunca llegó al servidor** (sin `POST` en el log) y, al no haber timeout en el frontend, la interfaz quedó en `VALIDANDO…` **7,8 minutos** mientras sondas sintéticas respondían en 206–423 ms. Pruebas de contorno contra producción, con datos sintéticos: 5 filas → 5 incluidos (223 ms); 1.000 filas → 1.000 incluidos (3,29 s); archivo que no es Excel → **400** (269 ms); archivo de 11 MB → **413** (3,83 s), ambos errores legibles por el navegador.
+
 ### 8.4 Funcionales de conciliación (casos conocidos)
 
 Cubiertos por la suite automática (192 pruebas de Ventas, 05-11 16:08) y la QA de punta a punta (21 casos, 05-11 16:49), con datos sintéticos de 280 documentos y discrepancias plantadas:
@@ -367,6 +369,36 @@ Corrección recomendada: mover a hilo con timeout; guardar claves en servidor. F
 ```
 
 ---
+
+```
+ID: D-12
+Severidad: P2
+Componente: backend/ventas/dian_emitidos.py, línea 571 (validación `nit_emisor`)
+Descripción: cuando NINGÚN documento pasa el filtro de grupo, `nits_emisores()` devuelve un conjunto vacío y la validación informa «El contenedor mezcla varios NIT emisores» con el detalle en blanco. El problema real es el contrario: no encontró ningún NIT emisor.
+Evidencia: contenedor sintético con `Grupo = "Emitidos"` (plural) en vez de `"Emitido"` → todas las filas excluidas → validación `nit_emisor` en nivel `error`, mensaje «El contenedor mezcla varios NIT emisores», `detalle: ""`. Reproducido contra producción el 05-11-2026.
+Pasos para reproducir: cargar un contenedor cuya columna «Grupo» no diga exactamente «Emitido» (o cuyo «Estado» no esté en ESTADOS_APROBADOS), con un único NIT emisor.
+Causa: `"ok" if len(nits) == 1 else "error"` trata `len(nits) == 0` igual que `len(nits) > 1`, y `", ".join(sorted(nits))` produce cadena vacía.
+Estado de causa: CONFIRMADA
+Impacto: el usuario recibe un error BLOQUEANTE con una explicación falsa y sin detalle, y se pone a buscar un conflicto de NIT que no existe. El motivo verdadero (grupo o estado) sí está en `documento.motivo`, pero no se muestra en esta validación. Durante la auditoría del 05-11 este mensaje desvió el diagnóstico dos veces, con el código fuente a la vista.
+Corrección recomendada: separar los tres casos — 0 NIT («Ningún documento emitido con NIT emisor: revisa las columnas Grupo y Estado»), 1 NIT (ok), más de 1 (el mensaje actual) — y, cuando sean 0, incluir en el detalle los motivos de exclusión más frecuentes.
+Riesgo de la corrección: nulo; solo cambia el texto y el nivel de una validación.
+Pruebas de aceptación: contenedor con grupo incorrecto → validación con el mensaje de «ningún emitido», no el de mezcla; contenedor con dos NIT → mensaje de mezcla intacto (QA-04 sin cambios).
+```
+
+```
+ID: D-13
+Severidad: P3
+Componente: frontend/js/ventas_engine.js — `pintarAnalisis`, tabla de tipos (`vt-tabla-tipos`)
+Descripción: la tabla de tipos marca «INCLUIDO · Venta: suma al total bruto» para un tipo cuyos documentos han sido TODOS excluidos, mientras el KPI de al lado muestra 0 documentos de venta.
+Evidencia: contenedor sintético con `Estado = "Autorizado"` (fuera de ESTADOS_APROBADOS) → `tipos[0].incluido: true` y `documentos_incluidos: 0` en la misma respuesta. Reproducido contra producción el 05-11-2026.
+Pasos para reproducir: cargar un contenedor cuyo «Estado» no sea «Aprobado» y comparar la tabla de tipos con los KPI.
+Causa: `tipos[].incluido` informa la REGLA del tipo; los KPI informan el RESULTADO por documento. Ambos son correctos por separado y se contradicen puestos juntos.
+Estado de causa: CONFIRMADA
+Impacto: el usuario lee «INCLUIDO» junto a un 0 y busca el fallo en el sitio equivocado. Agrava a D-12: juntos hacen que un problema de «Estado» o «Grupo» parezca un problema de NIT.
+Corrección recomendada: en la tabla de tipos, mostrar también cuántas filas de ese tipo quedaron realmente incluidas (por ejemplo «INCLUIDO · 0 de 5 filas») y, cuando sean 0, el motivo de exclusión dominante.
+Riesgo de la corrección: bajo; la respuesta ya trae los motivos por documento.
+Pruebas de aceptación: contenedor con todos los documentos excluidos por estado → la tabla de tipos no muestra «INCLUIDO» a secas; QA-05 sin cambios.
+```
 
 ## 11. Riesgo e impacto por defecto
 
