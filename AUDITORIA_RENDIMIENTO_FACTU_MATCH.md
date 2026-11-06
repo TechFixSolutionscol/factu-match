@@ -462,7 +462,9 @@ Hasta aquí todo lo medido era local y sintético. Esta sección es distinta: es
 | 3.ª | ~450 MB | al límite |
 | **4.ª** | **~549 MB** | **no: Render mata el proceso** |
 
-Es decir: **cuatro conciliaciones del mes real en una misma hora bastan hoy para tumbar el servicio** y perder los resultados guardados. Con `VENTAS_MAX_RESULTADOS=1` el problema desaparece, porque solo se conserva la última. Es el argumento más fuerte a favor de la fase 0, y ya no es una extrapolación de laboratorio.
+Es decir: **cuatro conciliaciones del mes real en una misma hora bastarían para tumbar el servicio** y perder los resultados guardados.
+
+> **Corrección tras conocer el uso real (05-11-2026, dato del negocio): no se hacen más de DOS conciliaciones al día.** Eso desactiva este riesgo en la práctica. La caché expira a la hora (`ttl=3600`), así que con dos conciliaciones separadas por horas nunca convive más de un resultado en memoria y el pico se queda en ~252 MB, la mitad del límite. Dos seguidas llegarían a ~351 MB, también holgado. **`VENTAS_MAX_RESULTADOS=1` deja de ser necesario** y baja de «hacer hoy» a red de seguridad opcional. El único escenario que aún lo justificaría es investigar un descuadre reconciliando cuatro o más veces en la misma hora mientras se ajustan fechas o parámetros; si eso llega a pasar, el proceso muere sin aviso y conviene tener la variable puesta de antemano. La medición de +99 MB por conciliación sigue siendo válida y es el número que hay que vigilar si el volumen o la frecuencia cambian.
 
 **Incidente observado en vivo 10 minutos antes: la petición que nunca llegó [HECHO, confirma R-10]**
 
@@ -586,7 +588,7 @@ Orden según la prioridad de la sección 12 del prompt de auditoría. Ninguna fa
 > **Reenfoque tras conocer el techo real del negocio (15.000 facturas al mes).** El objetivo deja de ser «escalar a 100.000» y pasa a ser «que el peor mes termine siempre, quepa en memoria y se vea el progreso». Eso elimina la fase 3 del plan original y reduce el alcance de la fase 2.
 
 ### Fase 0 — Dos cambios de configuración, hoy, sin código (minutos)
-1. **`VENTAS_MAX_RESULTADOS=1`** en las variables de entorno de Render. Medido (§9.6): con 15.000 filas el valor actual (5) lleva el proceso a 585 MB y lo mata; con 2 el pico llega a 539 MB y también se pasa; con 1 se estabiliza en 449 MB. Efecto secundario: solo se conserva la última conciliación, así que descargar el reporte de una anterior obligará a repetirla. Es reversible en cualquier momento.
+1. **`VENTAS_MAX_RESULTADOS=1`** en las variables de entorno de Render. **[OPCIONAL desde el 05-11-2026: el negocio hace como mucho dos conciliaciones diarias, así que el agotamiento de memoria no se alcanza — ver la corrección en §9.8. Queda como red de seguridad para sesiones de investigación con muchas conciliaciones seguidas.]** Medido (§9.6): con 15.000 filas el valor actual (5) lleva el proceso a 585 MB y lo mata; con 2 el pico llega a 539 MB y también se pasa; con 1 se estabiliza en 449 MB. Efecto secundario: solo se conserva la última conciliación, así que descargar el reporte de una anterior obligará a repetirla. Es reversible en cualquier momento.
 2. **Pasar el plan de `free` a `starter`**: quita el *spin-down* (se acabó el arranque en frío de ≈1 minuto) y triplica la CPU (0,15 → 0,5), con lo que los ≈18 s de CPU del peor mes pasan de ≈2 min a ≈36 s. La memoria sigue en 512 MB, así que el punto 1 sigue haciendo falta. Si se prefiere holgura de memoria en vez de ajustar la caché, *Standard* da 2 GB.
 
 Además, para cerrar las dos hipótesis abiertas (sin código):
